@@ -1,0 +1,18 @@
+{
+  "name": "tutoring-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Standalone tutoring lesson tracker with calendar and payment status.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
+  }
+}
