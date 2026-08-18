@@ -162,6 +162,8 @@ main { flex: 1; overflow-y: auto; padding-bottom: 96px; }
 .field input:focus, .field select:focus, .field textarea:focus { outline: none; border-color: var(--green); box-shadow: 0 0 0 2px var(--green-bg); }
 .field textarea { resize: none; font-family: inherit; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 400; color: var(--ink-soft); cursor: pointer; text-transform: none; letter-spacing: normal; }
+.checkbox-label input { width: auto; }
 .status-picker { display: flex; gap: 8px; }
 .status-option { flex: 1; font-size: 12px; font-weight: 500; padding: 8px; border-radius: var(--radius); border: 1px solid var(--rule-soft); background: var(--surface); color: var(--ink-faint); }
 .status-option.active.scheduled { background: var(--brass-bg); color: var(--brass); border-color: var(--brass-border); }
@@ -171,6 +173,10 @@ main { flex: 1; overflow-y: auto; padding-bottom: 96px; }
 .paid-toggle.is-paid { background: var(--green-bg); color: var(--green-dark); border-color: #a7f3d0; }
 .paid-toggle.is-unpaid { background: var(--rust-bg); color: var(--rust); border-color: var(--rust-border); }
 .modal-actions { display: flex; gap: 8px; margin-top: 16px; }
+
+.prepay-box { background: var(--paper); border: 1px solid var(--rule-soft); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 12px; }
+.prepay-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: var(--ink-soft); }
+.prepay-balance { font-weight: 700; color: var(--green-dark); font-variant-numeric: tabular-nums; }
 
 .save-badge { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--brass); background: var(--brass-bg); padding: 4px 8px; border-radius: var(--radius-sm); border: 1px solid var(--brass-border); white-space: nowrap; }
 .loading-screen { min-height: 100vh; display: flex; align-items: center; justify-content: center; color: var(--ink-faint); font-size: 14px; }
