@@ -2,6 +2,7 @@
 let state = {
   students: [],
   lessons: [],
+  payments: [],
   tab: 'overview',
   loaded: false,
   calendarMonth: new Date(),
@@ -13,6 +14,7 @@ let state = {
 let lessonModal = null;
 let studentModal = null;
 let confirmModal = null;
+let prepayForm = null;
 
 const SUBJECT_OPTIONS = ['Mathematics', 'Economics', 'Other'];
 const STUDENT_COLORS = ['#2F6B4F', '#8B4A2B', '#3B5A6B', '#7A5C2E', '#6B3F5C', '#4A6B3F', '#8B3A3A', '#3F5C6B'];
@@ -68,15 +70,22 @@ const Api = {
   createStudent: (data) => api('/students', { method: 'POST', body: JSON.stringify(data) }),
   updateStudent: (id, data) => api('/students/' + id, { method: 'PUT', body: JSON.stringify(data) }),
   deleteStudent: (id) => api('/students/' + id, { method: 'DELETE' }),
+  getPayments: () => api('/payments'),
+  addPrepayment: (studentId, data) => api('/students/' + studentId + '/prepayments', { method: 'POST', body: JSON.stringify(data) }),
   getLessons: () => api('/lessons'),
   createLesson: (data) => api('/lessons', { method: 'POST', body: JSON.stringify(data) }),
   updateLesson: (id, data) => api('/lessons/' + id, { method: 'PUT', body: JSON.stringify(data) }),
   togglePaid: (id) => api('/lessons/' + id + '/paid', { method: 'PATCH' }),
+  useLessonPrepay: (id) => api('/lessons/' + id + '/use-prepay', { method: 'PATCH' }),
   deleteLesson: (id) => api('/lessons/' + id, { method: 'DELETE' }),
 };
 
 // ---------- Derived data ----------
 function studentById(id) { return state.students.find(s => s.id === id) || null; }
+function studentPrepayBalance(id) {
+  const s = studentById(id);
+  return s ? (s.prepaidBalance || 0) : 0;
+}
 function lessonsByDate() {
   const m = {};
   state.lessons.forEach(l => { (m[l.date] = m[l.date] || []).push(l); });
@@ -91,12 +100,18 @@ function computeStats() {
   state.lessons.forEach(l => {
     const [y, m] = l.date.split('-').map(Number);
     const inCurMonth = (y === curYear && (m - 1) === curMonth);
-    if (l.paid && inCurMonth) monthIncome += Number(l.amount) || 0;
+    if (l.paid && !l.viaPrepay && inCurMonth) monthIncome += Number(l.amount) || 0;
     if (l.status === 'completed' && !l.paid) outstanding += Number(l.amount) || 0;
     if (l.status === 'scheduled' && l.date >= today) upcoming += 1;
     if (l.status === 'completed' && inCurMonth) completedThisMonth += 1;
   });
-  return { monthIncome, outstanding, upcoming, completedThisMonth };
+  state.payments.forEach(p => {
+    const [y, m] = p.date.split('-').map(Number);
+    const inCurMonth = (y === curYear && (m - 1) === curMonth);
+    if (inCurMonth) monthIncome += Number(p.amount) || 0;
+  });
+  const totalPrepaid = state.students.reduce((sum, s) => sum + (s.prepaidBalance || 0), 0);
+  return { monthIncome, outstanding, upcoming, completedThisMonth, totalPrepaid };
 }
 function computeNextLesson() {
   const today = todayISO();
@@ -211,6 +226,7 @@ function renderOverview() {
         <div class="statement-row divider"><span>Outstanding</span><span class="amount rust">€${stats.outstanding.toFixed(2)}</span></div>
         <div class="statement-row"><span>Upcoming lessons</span><span class="count">${stats.upcoming}</span></div>
         <div class="statement-row"><span>Completed this month</span><span class="count">${stats.completedThisMonth}</span></div>
+        <div class="statement-row"><span>Prepaid lessons on account</span><span class="count">${stats.totalPrepaid}</span></div>
       </div>
       ${nextLesson ? `<div style="margin-top:16px;"><p class="section-label">Next lesson</p>${lessonRowHTML(nextLesson)}</div>` : ''}
       ${needsAttention.length > 0 ? `<div style="margin-top:16px;"><p class="section-label">Needs payment</p>${needsAttention.slice(0, 5).map(lessonRowHTML).join('')}</div>` : ''}
@@ -329,12 +345,18 @@ function renderStudents() {
         const sl = state.lessons.filter(l => l.studentId === s.id);
         const completed = sl.filter(l => l.status === 'completed').length;
         const owed = sl.filter(l => l.status === 'completed' && !l.paid).reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+        const bits = [esc(s.subject)];
+        if (s.grade) bits.push(esc(s.grade));
+        bits.push(`€${s.rate}/hr`);
+        bits.push(`${completed} lesson${completed !== 1 ? 's' : ''}`);
+        if (owed > 0) bits.push(`€${owed.toFixed(2)} owed`);
+        if (s.prepaidBalance > 0) bits.push(`${s.prepaidBalance} prepaid`);
         return `
           <div class="student-row">
             <div class="student-avatar" style="background:${s.color}">${esc(s.name.charAt(0).toUpperCase())}</div>
             <button class="student-main" data-action="edit-student" data-id="${s.id}">
               <div class="student-name">${esc(s.name)}</div>
-              <div class="student-sub">${esc(s.subject)} · €${s.rate}/hr · ${completed} lesson${completed !== 1 ? 's' : ''}${owed > 0 ? ` · €${owed.toFixed(2)} owed` : ''}</div>
+              <div class="student-sub">${bits.join(' · ')}</div>
             </button>
             <button class="icon-btn" data-action="delete-student" data-id="${s.id}">${iconTrash()}</button>
           </div>
@@ -348,6 +370,7 @@ function renderStudents() {
 function renderLessonModal() {
   const f = lessonModal;
   const isNew = !f.id;
+  const balance = studentPrepayBalance(f.studentId);
   return `
     <div class="modal-overlay" data-modal="lesson">
       <div class="modal-sheet">
@@ -372,6 +395,14 @@ function renderLessonModal() {
             ${SUBJECT_OPTIONS.map(s => `<option value="${s}" ${s === f.subject ? 'selected' : ''}>${s}</option>`).join('')}
           </select>
         </div>
+        ${isNew ? `
+          <div class="field">
+            <label class="checkbox-label"><input type="checkbox" data-field="repeat" ${f.repeat ? 'checked' : ''} /> Repeat weekly</label>
+          </div>
+          ${f.repeat ? `
+            <div class="field"><label>Number of weeks</label><input type="number" min="2" max="52" data-field="repeatWeeks" value="${f.repeatWeeks || 8}" /></div>
+          ` : ''}
+        ` : ''}
         <div class="field">
           <label>Status</label>
           <div class="status-picker">
@@ -380,7 +411,8 @@ function renderLessonModal() {
         </div>
         <div class="field">
           <label>Payment</label>
-          <button type="button" class="paid-toggle ${f.paid ? 'is-paid' : 'is-unpaid'}" data-action="toggle-modal-paid">${f.paid ? iconCheck() + ' Paid' : 'Unpaid'}</button>
+          <button type="button" class="paid-toggle ${f.paid ? 'is-paid' : 'is-unpaid'}" data-action="toggle-modal-paid">${f.paid ? iconCheck() + (f.viaPrepay ? ' Paid (prepay)' : ' Paid') : 'Unpaid'}</button>
+          ${(!isNew && !f.paid && balance > 0) ? `<button type="button" class="btn-link" data-action="use-prepay-in-modal" style="margin-top:8px;">Use prepay credit (${balance} left)</button>` : ''}
         </div>
         <div class="field">
           <label>Notes</label>
@@ -409,12 +441,36 @@ function renderStudentModal() {
             ${SUBJECT_OPTIONS.map(s => `<option value="${s}" ${s === f.subject ? 'selected' : ''}>${s}</option>`).join('')}
           </select>
         </div>
+        <div class="field"><label>Grade</label><input type="text" data-field="grade" value="${esc(f.grade || '')}" placeholder="e.g. 10th grade" /></div>
         <div class="field"><label>Rate (€/hour)</label><input type="number" min="0" step="1" data-field="rate" value="${f.rate}" /></div>
+        ${f.id ? renderPrepaySection(f) : ''}
         <div class="modal-actions">
           <button class="btn btn-secondary btn-flex" data-action="close-student-modal">Cancel</button>
           <button class="btn btn-primary btn-flex" data-action="save-student">Save</button>
         </div>
       </div>
+    </div>
+  `;
+}
+
+function renderPrepaySection(f) {
+  const balance = f.prepaidBalance || 0;
+  return `
+    <div class="prepay-box">
+      <div class="prepay-row">
+        <span>Prepaid lessons</span>
+        <span class="prepay-balance">${balance} left</span>
+      </div>
+      ${prepayForm ? `
+        <div class="field-row" style="margin-top:8px;">
+          <div class="field"><label># lessons</label><input type="number" min="1" data-field="prepayLessons" value="${prepayForm.lessonsCount}" /></div>
+          <div class="field"><label>Amount (€)</label><input type="number" min="0" step="0.5" data-field="prepayAmount" value="${prepayForm.amount}" /></div>
+        </div>
+        <div class="modal-actions" style="margin-top:0;">
+          <button class="btn btn-secondary btn-flex" data-action="cancel-prepay">Cancel</button>
+          <button class="btn btn-primary btn-flex" data-action="record-prepay">Record</button>
+        </div>
+      ` : `<button type="button" class="btn-link" data-action="open-prepay" style="margin-top:6px;">${iconPlus(14)} Add prepayment</button>`}
     </div>
   `;
 }
@@ -436,9 +492,10 @@ function renderConfirmModal() {
 // ---------- Actions ----------
 async function loadAll() {
   try {
-    const [students, lessons] = await Promise.all([Api.getStudents(), Api.getLessons()]);
+    const [students, lessons, payments] = await Promise.all([Api.getStudents(), Api.getLessons(), Api.getPayments()]);
     state.students = students;
     state.lessons = lessons;
+    state.payments = payments;
     state.saveError = false;
   } catch (e) {
     console.error(e);
@@ -451,7 +508,7 @@ async function loadAll() {
 function openNewLesson(dateOverride) {
   if (state.students.length === 0) {
     state.tab = 'students';
-    studentModal = { id: null, name: '', subject: SUBJECT_OPTIONS[0], rate: 20 };
+    studentModal = { id: null, name: '', subject: SUBJECT_OPTIONS[0], grade: '', rate: 20 };
     render();
     return;
   }
@@ -459,6 +516,7 @@ function openNewLesson(dateOverride) {
   lessonModal = {
     id: null, studentId: s.id, date: dateOverride || todayISO(), time: '15:00',
     duration: 60, subject: s.subject, amount: s.rate, status: 'scheduled', paid: false, notes: '',
+    repeat: false, repeatWeeks: 8,
   };
   render();
 }
@@ -470,6 +528,17 @@ async function saveLessonModal() {
     if (f.id) {
       const updated = await Api.updateLesson(f.id, f);
       state.lessons = state.lessons.map(l => (l.id === f.id ? updated : l));
+    } else if (f.repeat && Number(f.repeatWeeks) > 1) {
+      const [y, m, d] = f.date.split('-').map(Number);
+      const baseDate = new Date(y, m - 1, d);
+      const creates = [];
+      for (let i = 0; i < Number(f.repeatWeeks); i++) {
+        const dt = new Date(baseDate);
+        dt.setDate(dt.getDate() + 7 * i);
+        creates.push(Api.createLesson({ ...f, date: toISODate(dt) }));
+      }
+      const created = await Promise.all(creates);
+      state.lessons = [...state.lessons, ...created];
     } else {
       const created = await Api.createLesson(f);
       state.lessons = [...state.lessons, created];
@@ -486,7 +555,25 @@ async function saveLessonModal() {
 async function toggleLessonPaid(id) {
   try {
     const result = await Api.togglePaid(id);
-    state.lessons = state.lessons.map(l => (l.id === id ? { ...l, paid: result.paid } : l));
+    state.lessons = state.lessons.map(l => (l.id === id ? { ...l, paid: result.paid, viaPrepay: result.viaPrepay } : l));
+    // Re-fetch students in case a prepay credit was refunded server-side.
+    state.students = await Api.getStudents();
+    state.saveError = false;
+  } catch (e) {
+    console.error(e);
+    state.saveError = true;
+  }
+  render();
+}
+
+async function useLessonPrepayFromModal() {
+  if (!lessonModal || !lessonModal.id) return;
+  try {
+    const result = await Api.useLessonPrepay(lessonModal.id);
+    state.lessons = state.lessons.map(l => (l.id === lessonModal.id ? { ...l, paid: true, viaPrepay: true } : l));
+    state.students = state.students.map(s => (s.id === lessonModal.studentId ? { ...s, prepaidBalance: result.newBalance } : s));
+    lessonModal.paid = true;
+    lessonModal.viaPrepay = true;
     state.saveError = false;
   } catch (e) {
     console.error(e);
@@ -508,6 +595,26 @@ async function saveStudentModal() {
       state.students = [...state.students, created];
     }
     studentModal = null;
+    prepayForm = null;
+    state.saveError = false;
+  } catch (e) {
+    console.error(e);
+    state.saveError = true;
+  }
+  render();
+}
+
+async function recordPrepayment() {
+  if (!studentModal || !prepayForm) return;
+  const lessonsCount = Number(prepayForm.lessonsCount);
+  const amount = Number(prepayForm.amount);
+  if (!lessonsCount || lessonsCount <= 0 || Number.isNaN(amount)) return;
+  try {
+    const result = await Api.addPrepayment(studentModal.id, { lessonsCount, amount });
+    state.students = state.students.map(s => (s.id === studentModal.id ? result.student : s));
+    state.payments = [result.payment, ...state.payments];
+    studentModal.prepaidBalance = result.student.prepaidBalance;
+    prepayForm = null;
     state.saveError = false;
   } catch (e) {
     console.error(e);
@@ -522,6 +629,7 @@ async function performConfirmedDelete() {
     if (c.type === 'lesson') {
       await Api.deleteLesson(c.id);
       state.lessons = state.lessons.filter(l => l.id !== c.id);
+      state.students = await Api.getStudents();
     } else {
       await Api.deleteStudent(c.id);
       state.students = state.students.filter(s => s.id !== c.id);
@@ -538,12 +646,6 @@ async function performConfirmedDelete() {
   render();
 }
 
-function closeAllModals() {
-  lessonModal = null;
-  studentModal = null;
-  confirmModal = null;
-}
-
 // ---------- Event delegation ----------
 document.addEventListener('click', (e) => {
   const overlay = e.target.closest('.modal-overlay');
@@ -551,7 +653,7 @@ document.addEventListener('click', (e) => {
     const which = overlay.dataset.modal;
     if (which === 'confirm') confirmModal = null;
     else if (which === 'lesson') lessonModal = null;
-    else if (which === 'student') studentModal = null;
+    else if (which === 'student') { studentModal = null; prepayForm = null; }
     render();
     return;
   }
@@ -564,10 +666,10 @@ document.addEventListener('click', (e) => {
     case 'set-tab': state.tab = el.dataset.tab; render(); break;
     case 'new-lesson': openNewLesson(todayISO()); break;
     case 'new-lesson-on-date': openNewLesson(state.selectedDate); break;
-    case 'new-student': studentModal = { id: null, name: '', subject: SUBJECT_OPTIONS[0], rate: 20 }; render(); break;
+    case 'new-student': studentModal = { id: null, name: '', subject: SUBJECT_OPTIONS[0], grade: '', rate: 20 }; render(); break;
     case 'edit-student': {
       const s = studentById(el.dataset.id);
-      if (s) { studentModal = { ...s }; render(); }
+      if (s) { studentModal = { ...s }; prepayForm = null; render(); }
       break;
     }
     case 'delete-student':
@@ -586,7 +688,7 @@ document.addEventListener('click', (e) => {
     case 'filter-status': state.filterStatus = el.dataset.value; render(); break;
     case 'filter-paid': state.filterPaid = (state.filterPaid === el.dataset.value ? 'all' : el.dataset.value); render(); break;
     case 'close-lesson-modal': lessonModal = null; render(); break;
-    case 'close-student-modal': studentModal = null; render(); break;
+    case 'close-student-modal': studentModal = null; prepayForm = null; render(); break;
     case 'save-lesson': saveLessonModal(); break;
     case 'save-student': saveStudentModal(); break;
     case 'delete-lesson-from-modal':
@@ -594,7 +696,11 @@ document.addEventListener('click', (e) => {
       render();
       break;
     case 'set-status': lessonModal.status = el.dataset.value; render(); break;
-    case 'toggle-modal-paid': lessonModal.paid = !lessonModal.paid; render(); break;
+    case 'toggle-modal-paid': lessonModal.paid = !lessonModal.paid; lessonModal.viaPrepay = false; render(); break;
+    case 'use-prepay-in-modal': useLessonPrepayFromModal(); break;
+    case 'open-prepay': prepayForm = { lessonsCount: 1, amount: studentModal.rate }; render(); break;
+    case 'cancel-prepay': prepayForm = null; render(); break;
+    case 'record-prepay': recordPrepayment(); break;
     case 'cancel-confirm': confirmModal = null; render(); break;
     case 'confirm-delete': performConfirmedDelete(); break;
   }
@@ -621,17 +727,29 @@ document.addEventListener('input', (e) => {
     if (field === 'date') { lessonModal.date = e.target.value; return; }
     if (field === 'time') { lessonModal.time = e.target.value; return; }
     if (field === 'notes') { lessonModal.notes = e.target.value; return; }
+    if (field === 'repeatWeeks') { lessonModal.repeatWeeks = Number(e.target.value) || 8; return; }
   }
   if (studentModal) {
     if (field === 'name') { studentModal.name = e.target.value; return; }
+    if (field === 'grade') { studentModal.grade = e.target.value; return; }
     if (field === 'rate') { studentModal.rate = Number(e.target.value) || 0; return; }
+  }
+  if (prepayForm) {
+    if (field === 'prepayLessons') { prepayForm.lessonsCount = Number(e.target.value) || 0; return; }
+    if (field === 'prepayAmount') { prepayForm.amount = Number(e.target.value) || 0; return; }
   }
 });
 
-// Select fields: discrete choice, full re-render is fine here.
+// Select + checkbox fields: discrete choice, full re-render is fine here.
 document.addEventListener('change', (e) => {
   const field = e.target.dataset.field;
-  if (!field || e.target.tagName !== 'SELECT') return;
+  if (!field) return;
+
+  if (e.target.type === 'checkbox') {
+    if (lessonModal && field === 'repeat') { lessonModal.repeat = e.target.checked; render(); }
+    return;
+  }
+  if (e.target.tagName !== 'SELECT') return;
 
   if (lessonModal && field === 'studentId') {
     lessonModal.studentId = e.target.value;
