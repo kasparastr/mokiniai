@@ -78,6 +78,7 @@ const Api = {
   togglePaid: (id) => api('/lessons/' + id + '/paid', { method: 'PATCH' }),
   useLessonPrepay: (id) => api('/lessons/' + id + '/use-prepay', { method: 'PATCH' }),
   deleteLesson: (id) => api('/lessons/' + id, { method: 'DELETE' }),
+  resetAll: () => api('/reset', { method: 'POST' }),
 };
 
 // ---------- Derived data ----------
@@ -362,6 +363,7 @@ function renderStudents() {
           </div>
         `;
       }).join('')}
+      <button class="danger-link" data-action="open-reset-confirm">Reset all data</button>
     </div>
   `;
 }
@@ -397,11 +399,24 @@ function renderLessonModal() {
         </div>
         ${isNew ? `
           <div class="field">
-            <label class="checkbox-label"><input type="checkbox" data-field="repeat" ${f.repeat ? 'checked' : ''} /> Repeat weekly</label>
+            <label>Additional dates (optional)</label>
+            <div class="extra-dates-row">
+              <input type="date" id="extraDateInput" />
+              <button type="button" class="btn btn-secondary" data-action="add-extra-date">Add</button>
+            </div>
+            ${(f.extraDates && f.extraDates.length) ? `
+              <div class="date-chips">
+                ${f.extraDates.map((d, i) => `<span class="date-chip">${formatDateLabel(d)}<button type="button" data-action="remove-extra-date" data-index="${i}">${iconX()}</button></span>`).join('')}
+              </div>
+            ` : ''}
+            <div class="repeat-weekly-row">
+              <span>Repeat weekly, </span>
+              <input type="number" min="1" max="52" id="repeatWeeksInput" value="4" />
+              <span> more time${f.extraDates && f.extraDates.length === 1 ? '' : 's'}</span>
+              <button type="button" class="btn-link" data-action="add-weekly-dates">${iconPlus(14)} Add</button>
+            </div>
+            <p class="field-hint">Use the date picker for stray past lessons, or repeat weekly for a regular booking \u2014 mix both if you need to.</p>
           </div>
-          ${f.repeat ? `
-            <div class="field"><label>Number of weeks</label><input type="number" min="2" max="52" data-field="repeatWeeks" value="${f.repeatWeeks || 8}" /></div>
-          ` : ''}
         ` : ''}
         <div class="field">
           <label>Status</label>
@@ -516,7 +531,7 @@ function openNewLesson(dateOverride) {
   lessonModal = {
     id: null, studentId: s.id, date: dateOverride || todayISO(), time: '15:00',
     duration: 60, subject: s.subject, amount: s.rate, status: 'scheduled', paid: false, notes: '',
-    repeat: false, repeatWeeks: 8,
+    extraDates: [],
   };
   render();
 }
@@ -528,20 +543,10 @@ async function saveLessonModal() {
     if (f.id) {
       const updated = await Api.updateLesson(f.id, f);
       state.lessons = state.lessons.map(l => (l.id === f.id ? updated : l));
-    } else if (f.repeat && Number(f.repeatWeeks) > 1) {
-      const [y, m, d] = f.date.split('-').map(Number);
-      const baseDate = new Date(y, m - 1, d);
-      const creates = [];
-      for (let i = 0; i < Number(f.repeatWeeks); i++) {
-        const dt = new Date(baseDate);
-        dt.setDate(dt.getDate() + 7 * i);
-        creates.push(Api.createLesson({ ...f, date: toISODate(dt) }));
-      }
-      const created = await Promise.all(creates);
-      state.lessons = [...state.lessons, ...created];
     } else {
-      const created = await Api.createLesson(f);
-      state.lessons = [...state.lessons, created];
+      const dates = [f.date, ...(f.extraDates || [])];
+      const created = await Promise.all(dates.map(date => Api.createLesson({ ...f, date })));
+      state.lessons = [...state.lessons, ...created];
     }
     lessonModal = null;
     state.saveError = false;
@@ -630,10 +635,15 @@ async function performConfirmedDelete() {
       await Api.deleteLesson(c.id);
       state.lessons = state.lessons.filter(l => l.id !== c.id);
       state.students = await Api.getStudents();
-    } else {
+    } else if (c.type === 'student') {
       await Api.deleteStudent(c.id);
       state.students = state.students.filter(s => s.id !== c.id);
       state.lessons = state.lessons.filter(l => l.studentId !== c.id);
+    } else if (c.type === 'reset-all') {
+      await Api.resetAll();
+      state.students = [];
+      state.lessons = [];
+      state.payments = [];
     }
     state.saveError = false;
   } catch (e) {
@@ -701,6 +711,46 @@ document.addEventListener('click', (e) => {
     case 'open-prepay': prepayForm = { lessonsCount: 1, amount: studentModal.rate }; render(); break;
     case 'cancel-prepay': prepayForm = null; render(); break;
     case 'record-prepay': recordPrepayment(); break;
+    case 'add-extra-date': {
+      const input = document.getElementById('extraDateInput');
+      if (input && input.value && lessonModal) {
+        if (!lessonModal.extraDates) lessonModal.extraDates = [];
+        if (input.value !== lessonModal.date && !lessonModal.extraDates.includes(input.value)) {
+          lessonModal.extraDates.push(input.value);
+          lessonModal.extraDates.sort();
+        }
+        render();
+      }
+      break;
+    }
+    case 'remove-extra-date': {
+      if (lessonModal && lessonModal.extraDates) {
+        lessonModal.extraDates.splice(Number(el.dataset.index), 1);
+        render();
+      }
+      break;
+    }
+    case 'add-weekly-dates': {
+      if (!lessonModal) break;
+      const weeksInput = document.getElementById('repeatWeeksInput');
+      const count = weeksInput ? (Number(weeksInput.value) || 4) : 4;
+      if (!lessonModal.extraDates) lessonModal.extraDates = [];
+      const allDates = [lessonModal.date, ...lessonModal.extraDates].sort();
+      const [y, m, d] = allDates[allDates.length - 1].split('-').map(Number);
+      const cursor = new Date(y, m - 1, d);
+      for (let i = 0; i < count; i++) {
+        cursor.setDate(cursor.getDate() + 7);
+        const iso = toISODate(cursor);
+        if (!lessonModal.extraDates.includes(iso)) lessonModal.extraDates.push(iso);
+      }
+      lessonModal.extraDates.sort();
+      render();
+      break;
+    }
+    case 'open-reset-confirm':
+      confirmModal = { type: 'reset-all', id: null, message: 'Delete every student, lesson, and payment? This cannot be undone.' };
+      render();
+      break;
     case 'cancel-confirm': confirmModal = null; render(); break;
     case 'confirm-delete': performConfirmedDelete(); break;
   }
@@ -727,7 +777,6 @@ document.addEventListener('input', (e) => {
     if (field === 'date') { lessonModal.date = e.target.value; return; }
     if (field === 'time') { lessonModal.time = e.target.value; return; }
     if (field === 'notes') { lessonModal.notes = e.target.value; return; }
-    if (field === 'repeatWeeks') { lessonModal.repeatWeeks = Number(e.target.value) || 8; return; }
   }
   if (studentModal) {
     if (field === 'name') { studentModal.name = e.target.value; return; }
@@ -745,10 +794,6 @@ document.addEventListener('change', (e) => {
   const field = e.target.dataset.field;
   if (!field) return;
 
-  if (e.target.type === 'checkbox') {
-    if (lessonModal && field === 'repeat') { lessonModal.repeat = e.target.checked; render(); }
-    return;
-  }
   if (e.target.tagName !== 'SELECT') return;
 
   if (lessonModal && field === 'studentId') {
