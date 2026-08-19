@@ -164,6 +164,18 @@ main { flex: 1; overflow-y: auto; padding-bottom: 96px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .checkbox-label { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 400; color: var(--ink-soft); cursor: pointer; text-transform: none; letter-spacing: normal; }
 .checkbox-label input { width: auto; }
+.extra-dates-row { display: flex; gap: 8px; }
+.extra-dates-row input { flex: 1; }
+.extra-dates-row .btn { padding: 9px 14px; white-space: nowrap; }
+.date-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.date-chip { display: inline-flex; align-items: center; gap: 4px; background: var(--paper); border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 4px 6px 4px 10px; font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.date-chip button { background: none; border: none; color: var(--ink-faint); padding: 2px; display: flex; }
+.date-chip svg { width: 12px; height: 12px; }
+.field-hint { font-size: 11px; color: var(--ink-faint); margin: 8px 0 0; line-height: 1.4; }
+.repeat-weekly-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 13px; color: var(--ink-soft); margin-top: 10px; }
+.repeat-weekly-row input { width: 52px; flex: none; padding: 6px 8px; text-align: center; }
+.repeat-weekly-row .btn-link { margin-left: auto; }
+.danger-link { display: block; margin: 24px auto 0; background: none; border: none; color: var(--ink-faint); font-size: 12px; text-decoration: underline; padding: 8px; }
 .status-picker { display: flex; gap: 8px; }
 .status-option { flex: 1; font-size: 12px; font-weight: 500; padding: 8px; border-radius: var(--radius); border: 1px solid var(--rule-soft); background: var(--surface); color: var(--ink-faint); }
 .status-option.active.scheduled { background: var(--brass-bg); color: var(--brass); border-color: var(--brass-border); }
