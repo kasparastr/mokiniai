@@ -337,3 +337,78 @@ main { flex: 1; padding-bottom: 108px; }
   *, .ov, .sheet { animation: none !important; transition: none !important; }
   .btn:active, .fab:active { transform: none; }
 }
+
+/* ---------- Received breakdown ---------- */
+.ledger-split {
+  display: flex; align-items: center; gap: 9px; padding: 0 16px 12px;
+  font-size: 12px; color: var(--ink-3);
+}
+.ledger-split i { width: 3px; height: 3px; border-radius: 99px; background: var(--line); }
+
+/* ---------- Per-student settle summary ---------- */
+.settle { margin-bottom: 10px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.settle-r { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-bottom: 1px solid var(--line-2); }
+.settle-r:last-child { border-bottom: none; }
+.settle-n { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settle-x { flex: 1; font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
+.settle-r b { font-variant-numeric: tabular-nums; font-size: 13.5px; color: var(--rust); }
+.settle-btn { margin-top: 16px; }
+
+/* ---------- Toolbar ---------- */
+.toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.toolbar-n { font-size: 12px; color: var(--ink-3); }
+
+/* ---------- Selection mode ---------- */
+.row.sel .row-main { gap: 10px; }
+.row.sel.on { border-color: var(--green); background: var(--green-bg); }
+.cbox {
+  width: 21px; height: 21px; flex-shrink: 0; border-radius: 6px;
+  border: 1.5px solid var(--line); display: flex; align-items: center; justify-content: center;
+  background: #fff; color: #fff;
+}
+.cbox.on { background: var(--green); border-color: var(--green); }
+.cbox svg { width: 13px; height: 13px; }
+.sel-amt { margin-left: auto; flex-shrink: 0; font-family: var(--serif); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.selbar {
+  position: fixed; left: 0; right: 0; bottom: 62px; z-index: 35;
+  display: flex; align-items: center; gap: 7px;
+  padding: 10px 14px; background: var(--ink); color: #fff;
+  box-shadow: 0 -4px 16px rgba(0,0,0,.16);
+}
+.selbar-i { flex: 1; display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.selbar-i b { font-size: 13.5px; font-weight: 600; }
+.selbar-i span { font-size: 11.5px; opacity: .65; font-variant-numeric: tabular-nums; }
+.selbar .btn { background: rgba(255,255,255,.12); border-color: rgba(255,255,255,.2); color: #fff; }
+.selbar .btn.pri { background: var(--green); border-color: var(--green); }
+.selbar .btn[disabled] { opacity: .4; }
+
+/* ---------- Prepay form clarity ---------- */
+.prepay-ft { font-size: 11.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px; }
+.perlesson { margin-top: 9px; padding: 8px 11px; background: var(--gold-bg); border: 1px solid #ecdcb4; border-radius: var(--r-sm); font-size: 12.5px; color: var(--gold); }
+.perlesson b { font-weight: 700; font-variant-numeric: tabular-nums; }
+.phist-m { flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left; min-width: 0; }
+.phist-m > span:first-child { font-size: 12.5px; color: var(--ink-2); }
+.phist-c { font-size: 11px; color: var(--ink-3); }
+
+/* ---------- Owed-by-student cards (Overview) ---------- */
+.owe { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); margin-bottom: 8px; overflow: hidden; }
+.owe-h { display: flex; align-items: center; gap: 11px; padding: 12px; }
+.av.sm { width: 30px; height: 30px; font-size: 14px; }
+.owe-b { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.owe-b b { font-size: 14.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.owe-b i { font-style: normal; font-size: 11.5px; color: var(--ink-3); }
+.owe-t {
+  font-family: var(--serif); font-size: 17px; font-weight: 600;
+  color: var(--rust); font-variant-numeric: tabular-nums; flex-shrink: 0;
+}
+.owe-acts { display: flex; gap: 7px; padding: 0 12px 12px; }
+.sub-num { font-family: var(--sans); font-size: 11.5px; letter-spacing: 0; text-transform: none; color: var(--ink-3); font-weight: 400; }
+
+/* ---------- Prepay per-lesson readout ---------- */
+.pl-idle { color: var(--ink-3); }
+.pl-tag {
+  display: inline-block; margin-left: 4px; padding: 1px 6px; border-radius: 99px;
+  background: rgba(138,98,22,.13); font-size: 11px; font-weight: 600;
+}
+.prepay-x b { color: var(--gold); font-variant-numeric: tabular-nums; }
