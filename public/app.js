@@ -1,3 +1,9 @@
+// ---------- Constants ----------
+const SUBJECTS = ['Mathematics', 'Economics', 'Other'];
+const COLORS = ['#2F6B4F', '#8B4A2B', '#3B5A6B', '#7A5C2E', '#6B3F5C', '#4A6B3F', '#8B3A3A', '#3F5C6B'];
+const STATUS_LABELS = { scheduled: 'Scheduled', completed: 'Done', cancelled: 'Cancelled' };
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
 // ---------- State ----------
 let state = {
   students: [],
@@ -5,811 +11,859 @@ let state = {
   payments: [],
   tab: 'overview',
   loaded: false,
+  busy: false,
+  error: null,
   calendarMonth: new Date(),
   selectedDate: todayISO(),
   filterStatus: 'all',
   filterPaid: 'all',
-  saveError: false,
+  filterStudent: 'all',
 };
 let lessonModal = null;
 let studentModal = null;
 let confirmModal = null;
 let prepayForm = null;
 
-const SUBJECT_OPTIONS = ['Mathematics', 'Economics', 'Other'];
-const STUDENT_COLORS = ['#2F6B4F', '#8B4A2B', '#3B5A6B', '#7A5C2E', '#6B3F5C', '#4A6B3F', '#8B3A3A', '#3F5C6B'];
-const STATUS_LABELS = { scheduled: 'Scheduled', completed: 'Completed', cancelled: 'Cancelled' };
-const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
 // ---------- Date helpers ----------
-function toISODate(d) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+function toISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-function todayISO() { return toISODate(new Date()); }
-function formatDateLabel(iso) {
+function todayISO() { return toISO(new Date()); }
+function parseISO(iso) {
   const [y, m, d] = iso.split('-').map(Number);
-  const dt = new Date(y, m - 1, d);
-  return dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+  return new Date(y, m - 1, d);
 }
-function formatMonthLabel(d) {
-  return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+function fmtDay(iso) {
+  return parseISO(iso).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 }
-function getMonthGrid(monthDate) {
-  const year = monthDate.getFullYear();
-  const month = monthDate.getMonth();
-  const firstDay = new Date(year, month, 1);
-  const lastDay = new Date(year, month + 1, 0);
-  const startWeekday = (firstDay.getDay() + 6) % 7;
-  const daysInMonth = lastDay.getDate();
+function fmtDayLong(iso) {
+  const t = todayISO();
+  if (iso === t) return 'Today';
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  if (iso === toISO(tomorrow)) return 'Tomorrow';
+  const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+  if (iso === toISO(yesterday)) return 'Yesterday';
+  return parseISO(iso).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+}
+function fmtMonth(d) { return d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }); }
+function monthGrid(monthDate) {
+  const y = monthDate.getFullYear(), m = monthDate.getMonth();
+  const start = (new Date(y, m, 1).getDay() + 6) % 7;
+  const days = new Date(y, m + 1, 0).getDate();
   const cells = [];
-  for (let i = 0; i < startWeekday; i++) cells.push(null);
-  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
-  while (cells.length % 7 !== 0) cells.push(null);
+  for (let i = 0; i < start; i++) cells.push(null);
+  for (let d = 1; d <= days; d++) cells.push(new Date(y, m, d));
+  while (cells.length % 7) cells.push(null);
   return cells;
 }
-function esc(str) {
-  const div = document.createElement('div');
-  div.textContent = str == null ? '' : String(str);
-  return div.innerHTML;
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
 }
+function money(n) { return '€' + Number(n || 0).toFixed(2); }
 
 // ---------- API ----------
-async function api(path, options) {
+async function call(path, options) {
   const res = await fetch('/api' + path, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  if (!res.ok) throw new Error('Request failed: ' + path);
-  return res.json();
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error((data && data.error) || 'Request failed');
+  return data;
 }
-const Api = {
-  getStudents: () => api('/students'),
-  createStudent: (data) => api('/students', { method: 'POST', body: JSON.stringify(data) }),
-  updateStudent: (id, data) => api('/students/' + id, { method: 'PUT', body: JSON.stringify(data) }),
-  deleteStudent: (id) => api('/students/' + id, { method: 'DELETE' }),
-  getPayments: () => api('/payments'),
-  addPrepayment: (studentId, data) => api('/students/' + studentId + '/prepayments', { method: 'POST', body: JSON.stringify(data) }),
-  getLessons: () => api('/lessons'),
-  createLesson: (data) => api('/lessons', { method: 'POST', body: JSON.stringify(data) }),
-  updateLesson: (id, data) => api('/lessons/' + id, { method: 'PUT', body: JSON.stringify(data) }),
-  togglePaid: (id) => api('/lessons/' + id + '/paid', { method: 'PATCH' }),
-  useLessonPrepay: (id) => api('/lessons/' + id + '/use-prepay', { method: 'PATCH' }),
-  deleteLesson: (id) => api('/lessons/' + id, { method: 'DELETE' }),
-  resetAll: () => api('/reset', { method: 'POST' }),
-};
+// Every mutation returns full state, so applying is uniform.
+async function mutate(path, options) {
+  state.busy = true; state.error = null; render();
+  try {
+    const data = await call(path, options);
+    state.students = data.students;
+    state.lessons = data.lessons;
+    state.payments = data.payments;
+  } catch (e) {
+    state.error = e.message;
+  }
+  state.busy = false;
+  render();
+}
 
-// ---------- Derived data ----------
+// ---------- Lookups ----------
 function studentById(id) { return state.students.find(s => s.id === id) || null; }
-function studentPrepayBalance(id) {
-  const s = studentById(id);
-  return s ? (s.prepaidBalance || 0) : 0;
+function lessonById(id) { return state.lessons.find(l => l.id === id) || null; }
+function lessonsFor(date) {
+  return state.lessons.filter(l => l.date === date).sort((a, b) => a.time.localeCompare(b.time));
 }
-function lessonsByDate() {
-  const m = {};
-  state.lessons.forEach(l => { (m[l.date] = m[l.date] || []).push(l); });
-  Object.values(m).forEach(arr => arr.sort((a, b) => a.time.localeCompare(b.time)));
-  return m;
+function paymentsFor(studentId) {
+  return state.payments.filter(p => p.studentId === studentId);
 }
-function computeStats() {
+
+// ---------- Derived ----------
+function monthStats() {
   const now = new Date();
-  const curMonth = now.getMonth(), curYear = now.getFullYear();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  let received = 0, owed = 0, done = 0, upcoming = 0;
   const today = todayISO();
-  let monthIncome = 0, outstanding = 0, upcoming = 0, completedThisMonth = 0;
   state.lessons.forEach(l => {
-    const [y, m] = l.date.split('-').map(Number);
-    const inCurMonth = (y === curYear && (m - 1) === curMonth);
-    if (l.paid && !l.viaPrepay && inCurMonth) monthIncome += Number(l.amount) || 0;
-    if (l.status === 'completed' && !l.paid) outstanding += Number(l.amount) || 0;
+    const inMonth = l.date.startsWith(ym);
+    if (l.paidCash && inMonth) received += l.amount;
+    if (l.status === 'completed' && !l.paid) owed += l.amount;
+    if (l.status === 'completed' && inMonth) done += 1;
     if (l.status === 'scheduled' && l.date >= today) upcoming += 1;
-    if (l.status === 'completed' && inCurMonth) completedThisMonth += 1;
   });
-  state.payments.forEach(p => {
-    const [y, m] = p.date.split('-').map(Number);
-    const inCurMonth = (y === curYear && (m - 1) === curMonth);
-    if (inCurMonth) monthIncome += Number(p.amount) || 0;
-  });
-  const totalPrepaid = state.students.reduce((sum, s) => sum + (s.prepaidBalance || 0), 0);
-  return { monthIncome, outstanding, upcoming, completedThisMonth, totalPrepaid };
+  state.payments.forEach(p => { if (p.date.startsWith(ym)) received += p.amount; });
+  const credits = state.students.reduce((s, x) => s + Math.max(0, x.prepaidBalance), 0);
+  return { received, owed, done, upcoming, credits };
 }
-function computeNextLesson() {
-  const today = todayISO();
-  const nowTime = new Date().toTimeString().slice(0, 5);
-  const upcoming = state.lessons
-    .filter(l => l.status === 'scheduled')
-    .filter(l => l.date > today || (l.date === today && l.time >= nowTime))
+function unpaidLessons() {
+  return state.lessons
+    .filter(l => l.status === 'completed' && !l.paid)
     .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-  return upcoming[0] || null;
 }
-function computeNeedsAttention() {
-  return state.lessons.filter(l => l.status === 'completed' && !l.paid)
-    .sort((a, b) => b.date.localeCompare(a.date));
+function stalePast() {
+  const today = todayISO();
+  return state.lessons.filter(l => l.status === 'scheduled' && l.date < today);
+}
+function nextLessons(n) {
+  const today = todayISO();
+  const now = new Date().toTimeString().slice(0, 5);
+  return state.lessons
+    .filter(l => l.status === 'scheduled')
+    .filter(l => l.date > today || (l.date === today && l.time >= now))
+    .sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time))
+    .slice(0, n);
 }
 
 // ---------- Icons ----------
-function iconHome() { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M5 10v10h14V10"/></svg>'; }
-function iconCalendar() { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>'; }
-function iconList() { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>'; }
-function iconUsers(size) { return `<svg width="${size || 20}" height="${size || 20}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>`; }
-function iconClock() { return '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>'; }
-function iconChevronLeft() { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>'; }
-function iconChevronRight() { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>'; }
-function iconTrash() { return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6h14z"/></svg>'; }
-function iconX() { return '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>'; }
-function iconCheck() { return '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline;vertical-align:-3px;"><path d="M20 6L9 17l-5-5"/></svg>'; }
-function iconPlus(size) { return `<svg width="${size || 26}" height="${size || 26}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`; }
+const I = {
+  home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 9.5V21h14V9.5"/></svg>',
+  cal: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+  left: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+  right: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  coins: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+};
+function icon(name, cls) { return `<span class="icn ${cls || ''}">${I[name]}</span>`; }
 
-// ---------- Rendering ----------
+// ---------- Render ----------
 function render() {
-  const app = document.getElementById('app');
+  const root = document.getElementById('app');
   if (!state.loaded) {
-    app.innerHTML = '<div class="loading-screen">Loading…</div>';
+    root.innerHTML = '<div class="boot">Loading…</div>';
     return;
   }
-  app.innerHTML = `
-    ${renderHeader()}
-    <main>${renderTabContent()}</main>
-    ${state.tab !== 'students' ? `<button class="fab" data-action="new-lesson" aria-label="Add lesson">${iconPlus()}</button>` : ''}
-    ${renderNav()}
-    ${lessonModal ? renderLessonModal() : ''}
-    ${studentModal ? renderStudentModal() : ''}
-    ${confirmModal ? renderConfirmModal() : ''}
+  root.innerHTML = `
+    ${header()}
+    <main>${tabContent()}</main>
+    ${state.tab === 'students'
+      ? `<button class="fab" data-a="new-student" aria-label="Add student">${I.plus}</button>`
+      : `<button class="fab" data-a="new-lesson" aria-label="Add lesson">${I.plus}</button>`}
+    ${nav()}
+    ${lessonModal ? lessonModalHTML() : ''}
+    ${studentModal ? studentModalHTML() : ''}
+    ${confirmModal ? confirmModalHTML() : ''}
   `;
 }
 
-function renderHeader() {
+function header() {
+  const s = monthStats();
   return `
-    <header class="app-header">
-      <div class="app-header-inner">
-        <div>
-          <h1 class="app-title">Tutoring</h1>
-          <p class="app-subtitle">${state.students.length} student${state.students.length !== 1 ? 's' : ''} · ${state.lessons.length} lesson${state.lessons.length !== 1 ? 's' : ''} on record</p>
-        </div>
-        ${state.saveError ? '<div class="save-badge">Connection issue</div>' : ''}
+    <header class="hdr">
+      <div class="hdr-top">
+        <h1>Tutoring</h1>
+        ${state.busy ? '<span class="dot-busy" aria-label="Saving"></span>' : ''}
       </div>
-      <div class="rule-double"></div>
-      <div class="rule-double"></div>
+      ${state.error ? `<div class="banner err">${esc(state.error)}</div>` : ''}
+      ${state.tab === 'overview' ? '' : `
+        <div class="hdr-strip">
+          <span><b>${money(s.received)}</b> in</span>
+          <span class="sep"></span>
+          <span class="${s.owed > 0 ? 'owed' : ''}"><b>${money(s.owed)}</b> owed</span>
+          ${s.credits > 0 ? `<span class="sep"></span><span><b>${s.credits}</b> prepaid</span>` : ''}
+        </div>
+      `}
     </header>
   `;
 }
 
-function renderNav() {
+function nav() {
   const tabs = [
-    { id: 'overview', label: 'Overview', icon: iconHome() },
-    { id: 'calendar', label: 'Calendar', icon: iconCalendar() },
-    { id: 'lessons', label: 'Lessons', icon: iconList() },
-    { id: 'students', label: 'Students', icon: iconUsers() },
+    ['overview', 'Overview', I.home],
+    ['calendar', 'Calendar', I.cal],
+    ['lessons', 'Lessons', I.list],
+    ['students', 'Students', I.users],
   ];
-  return `
-    <nav class="bottom-nav">
-      ${tabs.map(t => `
-        <button class="nav-btn ${state.tab === t.id ? 'active' : ''}" data-action="set-tab" data-tab="${t.id}">
-          ${t.icon}<span>${t.label}</span>
-        </button>
-      `).join('')}
-    </nav>
-  `;
+  return `<nav class="nav">${tabs.map(([id, label, ic]) => `
+    <button class="nav-b ${state.tab === id ? 'on' : ''}" data-a="tab" data-v="${id}">
+      <span class="icn">${ic}</span><span>${label}</span>
+    </button>`).join('')}</nav>`;
 }
 
-function renderTabContent() {
-  if (state.tab === 'overview') return renderOverview();
-  if (state.tab === 'calendar') return renderCalendar();
-  if (state.tab === 'lessons') return renderLessons();
-  if (state.tab === 'students') return renderStudents();
+function tabContent() {
+  if (!state.students.length && state.tab !== 'students') return emptyStart();
+  if (state.tab === 'overview') return overviewView();
+  if (state.tab === 'calendar') return calendarView();
+  if (state.tab === 'lessons') return lessonsView();
+  if (state.tab === 'students') return studentsView();
   return '';
 }
 
-function renderOverview() {
-  if (state.students.length === 0) {
-    return `
-      <div class="view">
-        <div class="empty-state">
-          ${iconUsers(36)}
-          <h2>Add your first student</h2>
-          <p>You need a student on record before logging lessons.</p>
-          <button class="btn btn-primary" data-action="new-student">Add student</button>
-        </div>
-      </div>
-    `;
-  }
-  const stats = computeStats();
-  const monthName = new Date().toLocaleDateString('en-GB', { month: 'long' });
-  const nextLesson = computeNextLesson();
-  const needsAttention = computeNeedsAttention();
-
-  return `
-    <div class="view">
-      <div class="statement">
-        <div class="statement-head"><h2>This month</h2><span>${monthName}</span></div>
-        <div class="statement-row"><span>Received</span><span class="amount green">€${stats.monthIncome.toFixed(2)}</span></div>
-        <div class="statement-row divider"><span>Outstanding</span><span class="amount rust">€${stats.outstanding.toFixed(2)}</span></div>
-        <div class="statement-row"><span>Upcoming lessons</span><span class="count">${stats.upcoming}</span></div>
-        <div class="statement-row"><span>Completed this month</span><span class="count">${stats.completedThisMonth}</span></div>
-        <div class="statement-row"><span>Prepaid lessons on account</span><span class="count">${stats.totalPrepaid}</span></div>
-      </div>
-      ${nextLesson ? `<div style="margin-top:16px;"><p class="section-label">Next lesson</p>${lessonRowHTML(nextLesson)}</div>` : ''}
-      ${needsAttention.length > 0 ? `<div style="margin-top:16px;"><p class="section-label">Needs payment</p>${needsAttention.slice(0, 5).map(lessonRowHTML).join('')}</div>` : ''}
-      ${!nextLesson && needsAttention.length === 0 ? '<div class="empty-state" style="padding:32px 16px;"><p>All caught up. Tap + to log a lesson.</p></div>' : ''}
-    </div>
-  `;
+function emptyStart() {
+  return `<div class="wrap"><div class="empty">
+    <span class="icn big">${I.users}</span>
+    <h2>Start with a student</h2>
+    <p>Add someone to your roster, then log lessons against them.</p>
+    <button class="btn pri" data-a="new-student">Add a student</button>
+  </div></div>`;
 }
 
-function lessonRowHTML(l) {
-  const s = studentById(l.studentId);
-  const color = s ? s.color : '#a8a29e';
-  const name = s ? esc(s.name) : 'Unknown student';
-  return `
-    <div class="lesson-row">
-      <div class="lesson-color-bar" style="background:${color}"></div>
-      <button class="lesson-main" data-action="open-lesson" data-id="${l.id}">
-        <div class="lesson-top">
-          <span class="lesson-name">${name}</span>
-          <span class="status-badge status-${l.status}">${STATUS_LABELS[l.status]}</span>
+// ---------- Overview ----------
+function overviewView() {
+  const s = monthStats();
+  const month = new Date().toLocaleDateString('en-GB', { month: 'long' });
+  const unpaid = unpaidLessons();
+  const stale = stalePast();
+  const next = nextLessons(3);
+  const lowBalance = state.students.filter(x => x.creditsTotal > 0 && x.prepaidBalance === 0);
+
+  return `<div class="wrap">
+    <section class="ledger">
+      <div class="ledger-h"><span>${month}</span></div>
+      <div class="ledger-hero">
+        <div>
+          <span class="lbl">Received</span>
+          <span class="big-num in">${money(s.received)}</span>
         </div>
-        <div class="lesson-meta">${iconClock()}<span>${formatDateLabel(l.date)} · ${esc(l.time)} · ${l.duration}min</span></div>
-        <div class="lesson-subject">${esc(l.subject)}</div>
+        <div class="ledger-div"></div>
+        <div>
+          <span class="lbl">Outstanding</span>
+          <span class="big-num ${s.owed > 0 ? 'out' : 'zero'}">${money(s.owed)}</span>
+        </div>
+      </div>
+      <div class="ledger-foot">
+        <span>${s.done} done</span><i></i>
+        <span>${s.upcoming} upcoming</span><i></i>
+        <span>${s.credits} prepaid credit${s.credits === 1 ? '' : 's'}</span>
+      </div>
+    </section>
+
+    ${stale.length ? `
+      <div class="nudge">
+        <div>
+          <b>${stale.length} past lesson${stale.length === 1 ? '' : 's'} still marked scheduled.</b>
+          <span>Marking them done applies any prepaid credits.</span>
+        </div>
+        <button class="btn sm pri" data-a="complete-past">Mark done</button>
+      </div>` : ''}
+
+    ${lowBalance.length ? `
+      <div class="nudge soft">
+        <div>
+          <b>${lowBalance.map(x => esc(x.name)).join(', ')}</b>
+          <span>Prepaid block used up — time to top up.</span>
+        </div>
+      </div>` : ''}
+
+    ${unpaid.length ? `
+      <h3 class="sec">Awaiting payment <span class="sec-n">${money(unpaid.reduce((a, l) => a + l.amount, 0))}</span></h3>
+      <div class="rows">${unpaid.slice(0, 6).map(lessonRow).join('')}</div>
+      ${unpaid.length > 6 ? `<button class="more" data-a="tab" data-v="lessons">See all ${unpaid.length}</button>` : ''}
+    ` : ''}
+
+    ${next.length ? `
+      <h3 class="sec">Coming up</h3>
+      <div class="rows">${next.map(lessonRow).join('')}</div>
+    ` : ''}
+
+    ${!unpaid.length && !next.length && !stale.length ? `
+      <div class="empty sm"><p>Nothing outstanding, nothing scheduled.</p></div>` : ''}
+  </div>`;
+}
+
+// ---------- Lesson row ----------
+function payChip(l) {
+  if (l.viaPrepay) return `<span class="chip prepaid">${I.coins}Prepaid</span>`;
+  if (l.paidCash) return `<span class="chip paid">${I.check}Paid</span>`;
+  if (l.status === 'cancelled') return `<span class="chip void">—</span>`;
+  if (l.status === 'scheduled') return `<span class="chip due">Due</span>`;
+  return `<span class="chip unpaid">Unpaid</span>`;
+}
+
+function lessonRow(l, opts) {
+  const st = studentById(l.studentId);
+  const showDate = !(opts && opts.hideDate);
+  return `
+    <div class="row ${l.status === 'cancelled' ? 'is-void' : ''}">
+      <button class="row-main" data-a="open-lesson" data-id="${l.id}">
+        <span class="row-time">
+          <b>${esc(l.time)}</b>
+          ${showDate ? `<i>${fmtDay(l.date)}</i>` : `<i>${l.duration}m</i>`}
+        </span>
+        <span class="row-body">
+          <span class="row-name">
+            <span class="pip" style="background:${st ? st.color : '#a8a29e'}"></span>
+            ${st ? esc(st.name) : 'Unknown'}
+          </span>
+          <span class="row-sub">${esc(l.subject)}${st && st.grade ? ' · ' + esc(st.grade) : ''}${l.status === 'scheduled' ? '' : ' · ' + STATUS_LABELS[l.status]}</span>
+        </span>
       </button>
-      <button class="lesson-pay" data-action="toggle-paid" data-id="${l.id}">
-        <span class="lesson-amount">€${Number(l.amount).toFixed(2)}</span>
-        ${l.paid ? '<span class="stamp-paid">Paid</span>' : '<span class="tag-unpaid">Unpaid</span>'}
+      <button class="row-pay" data-a="toggle-paid" data-id="${l.id}" title="Toggle paid">
+        <span class="row-amt">${money(l.amount)}</span>
+        ${payChip(l)}
       </button>
-    </div>
-  `;
+    </div>`;
 }
 
-function renderCalendar() {
-  const cells = getMonthGrid(state.calendarMonth);
-  const byDate = lessonsByDate();
-  const todayIso = todayISO();
-  const dayLessons = byDate[state.selectedDate] || [];
-
-  return `
-    <div class="view">
-      <div class="cal-header">
-        <button data-action="cal-prev">${iconChevronLeft()}</button>
-        <span class="cal-month">${formatMonthLabel(state.calendarMonth)}</span>
-        <button data-action="cal-next">${iconChevronRight()}</button>
-      </div>
-      <div class="cal-grid">
-        ${WEEKDAY_LABELS.map(d => `<div class="cal-weekday">${d}</div>`).join('')}
-        ${cells.map(date => {
-          if (!date) return '<div></div>';
-          const iso = toISODate(date);
-          const dayL = byDate[iso] || [];
-          const isToday = iso === todayIso;
-          const isSelected = iso === state.selectedDate;
-          const cls = isSelected ? 'selected' : (isToday ? 'today' : '');
-          const dots = dayL.slice(0, 3).map(l => {
-            const s = studentById(l.studentId);
-            const c = isSelected ? '#fff' : (s ? s.color : '#a8a29e');
-            return `<span class="dot" style="background:${c}"></span>`;
-          }).join('');
-          return `
-            <button class="cal-day ${cls}" data-action="select-date" data-date="${iso}">
-              <span>${date.getDate()}</span>
-              ${dayL.length ? `<div class="dots">${dots}</div>` : ''}
-            </button>
-          `;
-        }).join('')}
-      </div>
-      <div class="cal-day-detail">
-        <div class="cal-day-detail-head">
-          <h3>${formatDateLabel(state.selectedDate)}</h3>
-          <button class="btn-link" data-action="new-lesson-on-date">${iconPlus(14)} Add</button>
-        </div>
-        ${dayLessons.length === 0 ? '<p style="text-align:center;color:var(--ink-faint);font-size:14px;padding:16px 0;">No lessons this day.</p>' : dayLessons.map(lessonRowHTML).join('')}
-      </div>
-    </div>
-  `;
+function groupedRows(lessons) {
+  const groups = {};
+  lessons.forEach(l => { (groups[l.date] = groups[l.date] || []).push(l); });
+  const dates = Object.keys(groups).sort();
+  return dates.map(d => `
+    <div class="grp">
+      <div class="grp-h"><span>${fmtDayLong(d)}</span><i></i></div>
+      <div class="rows">${groups[d].sort((a, b) => a.time.localeCompare(b.time)).map(l => lessonRow(l, { hideDate: true })).join('')}</div>
+    </div>`).join('');
 }
 
-function renderLessons() {
+// ---------- Calendar ----------
+function calendarView() {
+  const cells = monthGrid(state.calendarMonth);
   const today = todayISO();
-  const filtered = state.lessons.filter(l => {
+  const day = lessonsFor(state.selectedDate);
+
+  return `<div class="wrap">
+    <div class="cal-h">
+      <button class="ib" data-a="cal" data-v="-1">${I.left}</button>
+      <span>${fmtMonth(state.calendarMonth)}</span>
+      <button class="ib" data-a="cal" data-v="1">${I.right}</button>
+    </div>
+    <div class="cal">
+      ${WEEKDAYS.map(d => `<div class="cal-wd">${d}</div>`).join('')}
+      ${cells.map(dt => {
+        if (!dt) return '<div></div>';
+        const iso = toISO(dt);
+        const ls = lessonsFor(iso);
+        const cls = [
+          iso === state.selectedDate ? 'on' : '',
+          iso === today ? 'today' : '',
+          ls.some(l => l.status === 'completed' && !l.paid) ? 'flag' : '',
+        ].join(' ');
+        return `<button class="cal-d ${cls}" data-a="pick-date" data-v="${iso}">
+          <b>${dt.getDate()}</b>
+          ${ls.length ? `<span class="pips">${ls.slice(0, 4).map(l => {
+            const st = studentById(l.studentId);
+            return `<i style="background:${st ? st.color : '#a8a29e'}"></i>`;
+          }).join('')}</span>` : ''}
+        </button>`;
+      }).join('')}
+    </div>
+    <div class="day">
+      <div class="day-h">
+        <h3>${fmtDayLong(state.selectedDate)}</h3>
+        <button class="btn sm ghost" data-a="new-lesson-here">${I.plus} Add</button>
+      </div>
+      ${day.length ? `<div class="rows">${day.map(l => lessonRow(l, { hideDate: true })).join('')}</div>`
+        : '<p class="none">No lessons.</p>'}
+    </div>
+  </div>`;
+}
+
+// ---------- Lessons ----------
+function lessonsView() {
+  const today = todayISO();
+  let ls = state.lessons.filter(l => {
     if (state.filterStatus !== 'all' && l.status !== state.filterStatus) return false;
     if (state.filterPaid === 'paid' && !l.paid) return false;
     if (state.filterPaid === 'unpaid' && l.paid) return false;
+    if (state.filterStudent !== 'all' && l.studentId !== state.filterStudent) return false;
     return true;
   });
-  const upcoming = filtered.filter(l => l.date >= today).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-  const past = filtered.filter(l => l.date < today).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
-  const chip = (label, active, action, value) => `<button class="filter-chip ${active ? 'active' : ''}" data-action="${action}" data-value="${value}">${label}</button>`;
+  const upcoming = ls.filter(l => l.date >= today).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+  const past = ls.filter(l => l.date < today).sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const chip = (label, on, a, v) => `<button class="fchip ${on ? 'on' : ''}" data-a="${a}" data-v="${v}">${label}</button>`;
 
-  return `
-    <div class="view">
-      <div class="filter-row">
-        ${chip('All', state.filterStatus === 'all', 'filter-status', 'all')}
-        ${chip('Scheduled', state.filterStatus === 'scheduled', 'filter-status', 'scheduled')}
-        ${chip('Completed', state.filterStatus === 'completed', 'filter-status', 'completed')}
-        ${chip('Cancelled', state.filterStatus === 'cancelled', 'filter-status', 'cancelled')}
-        <div class="filter-divider"></div>
-        ${chip('Unpaid', state.filterPaid === 'unpaid', 'filter-paid', 'unpaid')}
-        ${chip('Paid', state.filterPaid === 'paid', 'filter-paid', 'paid')}
-      </div>
-      ${upcoming.length ? `<p class="section-label">Upcoming</p>${upcoming.map(lessonRowHTML).join('')}` : ''}
-      <p class="section-label" style="margin-top:${upcoming.length ? '20px' : '0'};">History</p>
-      ${past.length === 0 ? '<p style="text-align:center;color:var(--ink-faint);font-size:14px;padding:16px 0;">No past lessons yet.</p>' : past.map(lessonRowHTML).join('')}
+  return `<div class="wrap">
+    <div class="filters">
+      ${chip('All', state.filterStatus === 'all' && state.filterPaid === 'all', 'filter-clear', '')}
+      <i class="fsep"></i>
+      ${chip('Unpaid', state.filterPaid === 'unpaid', 'filter-paid', 'unpaid')}
+      ${chip('Paid', state.filterPaid === 'paid', 'filter-paid', 'paid')}
+      <i class="fsep"></i>
+      ${chip('Scheduled', state.filterStatus === 'scheduled', 'filter-status', 'scheduled')}
+      ${chip('Done', state.filterStatus === 'completed', 'filter-status', 'completed')}
+      ${chip('Cancelled', state.filterStatus === 'cancelled', 'filter-status', 'cancelled')}
     </div>
-  `;
+    ${state.students.length > 1 ? `
+      <select class="who" data-f="filterStudent">
+        <option value="all">All students</option>
+        ${state.students.map(s => `<option value="${s.id}" ${state.filterStudent === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+      </select>` : ''}
+    ${upcoming.length ? `<h3 class="sec">Upcoming</h3>${groupedRows(upcoming)}` : ''}
+    ${past.length ? `<h3 class="sec">History</h3>${groupedRows(past.slice(0, 60))}` : ''}
+    ${!upcoming.length && !past.length ? '<p class="none">Nothing matches that filter.</p>' : ''}
+  </div>`;
 }
 
-function renderStudents() {
-  return `
-    <div class="view">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-        <h2 style="font-size:14px;font-weight:600;margin:0;">Students</h2>
-        <button class="btn-link" data-action="new-student">${iconPlus(14)} Add student</button>
-      </div>
-      ${state.students.length === 0 ? '<p style="text-align:center;color:var(--ink-faint);font-size:14px;padding:32px 0;">No students yet.</p>' : state.students.map(s => {
-        const sl = state.lessons.filter(l => l.studentId === s.id);
-        const completed = sl.filter(l => l.status === 'completed').length;
-        const owed = sl.filter(l => l.status === 'completed' && !l.paid).reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
-        const bits = [esc(s.subject)];
-        if (s.grade) bits.push(esc(s.grade));
-        bits.push(`€${s.rate}/hr`);
-        bits.push(`${completed} lesson${completed !== 1 ? 's' : ''}`);
-        if (owed > 0) bits.push(`€${owed.toFixed(2)} owed`);
-        if (s.prepaidBalance > 0) bits.push(`${s.prepaidBalance} prepaid`);
-        return `
-          <div class="student-row">
-            <div class="student-avatar" style="background:${s.color}">${esc(s.name.charAt(0).toUpperCase())}</div>
-            <button class="student-main" data-action="edit-student" data-id="${s.id}">
-              <div class="student-name">${esc(s.name)}</div>
-              <div class="student-sub">${bits.join(' · ')}</div>
-            </button>
-            <button class="icon-btn" data-action="delete-student" data-id="${s.id}">${iconTrash()}</button>
-          </div>
-        `;
-      }).join('')}
-      <button class="danger-link" data-action="open-reset-confirm">Reset all data</button>
-    </div>
-  `;
+// ---------- Students ----------
+function studentsView() {
+  if (!state.students.length) return emptyStart();
+  return `<div class="wrap">
+    <div class="rows">${state.students.map(s => {
+      const mine = state.lessons.filter(l => l.studentId === s.id);
+      const done = mine.filter(l => l.status === 'completed').length;
+      const owed = mine.filter(l => l.status === 'completed' && !l.paid).reduce((a, l) => a + l.amount, 0);
+      return `
+        <button class="scard" data-a="edit-student" data-id="${s.id}">
+          <span class="av" style="background:${s.color}">${esc(s.name.trim().charAt(0).toUpperCase())}</span>
+          <span class="scard-b">
+            <span class="scard-n">${esc(s.name)}</span>
+            <span class="scard-s">${esc(s.subject)}${s.grade ? ' · ' + esc(s.grade) : ''} · ${money(s.rate)}/h · ${done} done</span>
+          </span>
+          <span class="scard-r">
+            ${s.prepaidBalance > 0
+              ? `<span class="bal ok">${s.prepaidBalance}<i>prepaid</i></span>`
+              : owed > 0
+                ? `<span class="bal due">${money(owed)}<i>owed</i></span>`
+                : `<span class="bal none">·</span>`}
+          </span>
+        </button>`;
+    }).join('')}</div>
+    <button class="reset" data-a="ask-reset">Reset all data</button>
+  </div>`;
 }
 
-// ---------- Modals ----------
-function renderLessonModal() {
+// ---------- Lesson modal ----------
+function lessonModalHTML() {
   const f = lessonModal;
   const isNew = !f.id;
-  const balance = studentPrepayBalance(f.studentId);
-  return `
-    <div class="modal-overlay" data-modal="lesson">
-      <div class="modal-sheet">
-        <div class="modal-head"><h2>${isNew ? 'New lesson' : 'Edit lesson'}</h2><button class="modal-close" data-action="close-lesson-modal">${iconX()}</button></div>
-        <div class="field">
-          <label>Student</label>
-          <select data-field="studentId">
-            ${state.students.map(s => `<option value="${s.id}" ${s.id === f.studentId ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field-row">
-          <div class="field"><label>Date</label><input type="date" data-field="date" value="${f.date}" /></div>
-          <div class="field"><label>Time</label><input type="time" data-field="time" value="${f.time}" /></div>
-        </div>
-        <div class="field-row">
-          <div class="field"><label>Duration (min)</label><input type="number" min="15" step="15" data-field="duration" value="${f.duration}" /></div>
-          <div class="field"><label>Amount (€)</label><input type="number" min="0" step="0.5" data-field="amount" value="${f.amount}" /></div>
-        </div>
-        <div class="field">
-          <label>Subject</label>
-          <select data-field="subject">
-            ${SUBJECT_OPTIONS.map(s => `<option value="${s}" ${s === f.subject ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-        </div>
-        ${isNew ? `
-          <div class="field">
-            <label>Additional dates (optional)</label>
-            <div class="extra-dates-row">
-              <input type="date" id="extraDateInput" />
-              <button type="button" class="btn btn-secondary" data-action="add-extra-date">Add</button>
-            </div>
-            ${(f.extraDates && f.extraDates.length) ? `
-              <div class="date-chips">
-                ${f.extraDates.map((d, i) => `<span class="date-chip">${formatDateLabel(d)}<button type="button" data-action="remove-extra-date" data-index="${i}">${iconX()}</button></span>`).join('')}
-              </div>
-            ` : ''}
-            <div class="repeat-weekly-row">
-              <span>Repeat weekly, </span>
-              <input type="number" min="1" max="52" id="repeatWeeksInput" value="4" />
-              <span> more time${f.extraDates && f.extraDates.length === 1 ? '' : 's'}</span>
-              <button type="button" class="btn-link" data-action="add-weekly-dates">${iconPlus(14)} Add</button>
-            </div>
-            <p class="field-hint">Use the date picker for stray past lessons, or repeat weekly for a regular booking \u2014 mix both if you need to.</p>
-          </div>
-        ` : ''}
-        <div class="field">
-          <label>Status</label>
-          <div class="status-picker">
-            ${Object.keys(STATUS_LABELS).map(st => `<button type="button" class="status-option ${f.status === st ? 'active ' + st : ''}" data-action="set-status" data-value="${st}">${STATUS_LABELS[st]}</button>`).join('')}
-          </div>
-        </div>
-        <div class="field">
-          <label>Payment</label>
-          <button type="button" class="paid-toggle ${f.paid ? 'is-paid' : 'is-unpaid'}" data-action="toggle-modal-paid">${f.paid ? iconCheck() + (f.viaPrepay ? ' Paid (prepay)' : ' Paid') : 'Unpaid'}</button>
-          ${(!isNew && !f.paid && balance > 0) ? `<button type="button" class="btn-link" data-action="use-prepay-in-modal" style="margin-top:8px;">Use prepay credit (${balance} left)</button>` : ''}
-        </div>
-        <div class="field">
-          <label>Notes</label>
-          <textarea data-field="notes" rows="2" placeholder="Optional">${esc(f.notes || '')}</textarea>
-        </div>
-        <div class="modal-actions">
-          ${!isNew ? `<button class="btn btn-danger-outline" data-action="delete-lesson-from-modal">${iconTrash()}</button>` : ''}
-          <button class="btn btn-secondary btn-flex" data-action="close-lesson-modal">Cancel</button>
-          <button class="btn btn-primary btn-flex" data-action="save-lesson">Save</button>
-        </div>
-      </div>
+  const st = studentById(f.studentId);
+  const bal = st ? st.prepaidBalance : 0;
+  const willPrepay = isNew && f.status === 'completed' && !f.paidCash && bal > 0;
+
+  return `<div class="ov" data-ov="lesson"><div class="sheet">
+    <div class="sheet-h">
+      <h2>${isNew ? 'New lesson' : 'Lesson'}</h2>
+      <button class="ib" data-a="close-lesson">${I.x}</button>
     </div>
-  `;
+
+    <label class="fl">Student</label>
+    <select data-f="studentId">
+      ${state.students.map(s => `<option value="${s.id}" ${s.id === f.studentId ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}
+    </select>
+
+    <div class="two">
+      <div><label class="fl">Date</label><input type="date" data-f="date" value="${f.date}"></div>
+      <div><label class="fl">Time</label><input type="time" data-f="time" value="${f.time}"></div>
+    </div>
+
+    <div class="two">
+      <div><label class="fl">Minutes</label><input type="number" min="15" step="15" data-f="duration" value="${f.duration}"></div>
+      <div><label class="fl">Amount (€)</label><input type="number" min="0" step="0.5" data-f="amount" value="${f.amount}"></div>
+    </div>
+
+    <label class="fl">Subject</label>
+    <select data-f="subject">
+      ${SUBJECTS.map(s => `<option value="${s}" ${s === f.subject ? 'selected' : ''}>${s}</option>`).join('')}
+    </select>
+
+    <label class="fl">Status</label>
+    <div class="seg">
+      ${Object.keys(STATUS_LABELS).map(k => `
+        <button class="seg-b ${f.status === k ? 'on ' + k : ''}" data-a="set-status" data-v="${k}">${STATUS_LABELS[k]}</button>`).join('')}
+    </div>
+
+    ${isNew ? `
+      <label class="fl">More dates <i class="hint">same time, same student</i></label>
+      <div class="adder">
+        <input type="date" id="xdate">
+        <button class="btn sm" data-a="add-date">Add</button>
+      </div>
+      ${f.extra.length ? `<div class="chips">${f.extra.map((d, i) =>
+        `<span class="dchip">${fmtDay(d)}<button data-a="rm-date" data-v="${i}">${I.x}</button></span>`).join('')}</div>` : ''}
+      <div class="weekly">
+        <span>Repeat weekly</span>
+        <input type="number" min="1" max="52" id="wk" value="4">
+        <span>×</span>
+        <button class="btn sm ghost" data-a="add-weekly">Add</button>
+      </div>
+    ` : ''}
+
+    <label class="fl">Payment</label>
+    ${f.viaPrepay ? `
+      <div class="paystate prepaid">
+        ${I.coins}<div><b>Covered by a prepaid credit</b><span>Deducted from ${st ? esc(st.name) : 'their'} balance automatically.</span></div>
+      </div>
+      <button class="btn ghost wide" data-a="modal-unpay">Mark as not paid</button>
+    ` : f.paidCash ? `
+      <div class="paystate paid">
+        ${I.check}<div><b>Paid directly</b><span>Cash or transfer, recorded against this lesson.</span></div>
+      </div>
+      <button class="btn ghost wide" data-a="modal-unpay">Mark as not paid</button>
+    ` : `
+      ${willPrepay ? `<div class="paystate hintbox">${I.coins}<div><b>Will use a prepaid credit</b><span>${st ? esc(st.name) : 'They'} ${bal === 1 ? 'has 1 credit' : 'has ' + bal + ' credits'} left — saving this as done uses one.</span></div></div>`
+        : (!isNew && f.status === 'completed' && bal > 0)
+          ? `<div class="paystate hintbox">${I.coins}<div><b>${bal} prepaid credit${bal === 1 ? '' : 's'} available</b><span>Saving will apply one automatically.</span></div></div>`
+          : ''}
+      <button class="btn wide ${willPrepay ? 'ghost' : 'pri'}" data-a="modal-pay">Mark paid directly</button>
+    `}
+
+    <label class="fl">Notes</label>
+    <textarea data-f="notes" rows="2" placeholder="Optional">${esc(f.notes || '')}</textarea>
+
+    <div class="acts">
+      ${!isNew ? `<button class="btn dang-o" data-a="ask-del-lesson">${I.trash}</button>` : ''}
+      <button class="btn" data-a="close-lesson">Cancel</button>
+      <button class="btn pri grow" data-a="save-lesson">${isNew && f.extra.length ? `Save ${f.extra.length + 1} lessons` : 'Save'}</button>
+    </div>
+  </div></div>`;
 }
 
-function renderStudentModal() {
+// ---------- Student modal ----------
+function studentModalHTML() {
   const f = studentModal;
-  return `
-    <div class="modal-overlay" data-modal="student">
-      <div class="modal-sheet">
-        <div class="modal-head"><h2>${f.id ? 'Edit student' : 'New student'}</h2><button class="modal-close" data-action="close-student-modal">${iconX()}</button></div>
-        <div class="field"><label>Name</label><input type="text" data-field="name" value="${esc(f.name)}" placeholder="Student name" /></div>
-        <div class="field">
-          <label>Subject</label>
-          <select data-field="subject">
-            ${SUBJECT_OPTIONS.map(s => `<option value="${s}" ${s === f.subject ? 'selected' : ''}>${s}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field"><label>Grade</label><input type="text" data-field="grade" value="${esc(f.grade || '')}" placeholder="e.g. 10th grade" /></div>
-        <div class="field"><label>Rate (€/hour)</label><input type="number" min="0" step="1" data-field="rate" value="${f.rate}" /></div>
-        ${f.id ? renderPrepaySection(f) : ''}
-        <div class="modal-actions">
-          <button class="btn btn-secondary btn-flex" data-action="close-student-modal">Cancel</button>
-          <button class="btn btn-primary btn-flex" data-action="save-student">Save</button>
-        </div>
-      </div>
+  const isNew = !f.id;
+  const hist = isNew ? [] : paymentsFor(f.id);
+
+  return `<div class="ov" data-ov="student"><div class="sheet">
+    <div class="sheet-h">
+      <h2>${isNew ? 'New student' : esc(f.name)}</h2>
+      <button class="ib" data-a="close-student">${I.x}</button>
     </div>
-  `;
-}
 
-function renderPrepaySection(f) {
-  const balance = f.prepaidBalance || 0;
-  return `
-    <div class="prepay-box">
-      <div class="prepay-row">
-        <span>Prepaid lessons</span>
-        <span class="prepay-balance">${balance} left</span>
+    <label class="fl">Name</label>
+    <input type="text" data-f="name" value="${esc(f.name)}" placeholder="Full name">
+
+    <div class="two">
+      <div><label class="fl">Subject</label>
+        <select data-f="subject">${SUBJECTS.map(s => `<option value="${s}" ${s === f.subject ? 'selected' : ''}>${s}</option>`).join('')}</select>
       </div>
-      ${prepayForm ? `
-        <div class="field-row" style="margin-top:8px;">
-          <div class="field"><label># lessons</label><input type="number" min="1" data-field="prepayLessons" value="${prepayForm.lessonsCount}" /></div>
-          <div class="field"><label>Amount (€)</label><input type="number" min="0" step="0.5" data-field="prepayAmount" value="${prepayForm.amount}" /></div>
-        </div>
-        <div class="modal-actions" style="margin-top:0;">
-          <button class="btn btn-secondary btn-flex" data-action="cancel-prepay">Cancel</button>
-          <button class="btn btn-primary btn-flex" data-action="record-prepay">Record</button>
-        </div>
-      ` : `<button type="button" class="btn-link" data-action="open-prepay" style="margin-top:6px;">${iconPlus(14)} Add prepayment</button>`}
+      <div><label class="fl">Grade</label><input type="text" data-f="grade" value="${esc(f.grade || '')}" placeholder="e.g. 11"></div>
     </div>
-  `;
-}
 
-function renderConfirmModal() {
-  return `
-    <div class="modal-overlay" data-modal="confirm" style="z-index:40;">
-      <div class="modal-sheet" style="border-radius:12px;max-width:340px;">
-        <p style="font-size:14px;margin:0 0 16px;">${esc(confirmModal.message)}</p>
-        <div class="modal-actions" style="margin-top:0;">
-          <button class="btn btn-secondary btn-flex" data-action="cancel-confirm">Cancel</button>
-          <button class="btn btn-danger btn-flex" data-action="confirm-delete">Delete</button>
+    <label class="fl">Rate (€ per hour)</label>
+    <input type="number" min="0" step="1" data-f="rate" value="${f.rate}">
+
+    ${isNew ? '' : `
+      <div class="prepay">
+        <div class="prepay-h">
+          <div>
+            <span class="prepay-n">${f.prepaidBalance}</span>
+            <span class="prepay-l">lesson${f.prepaidBalance === 1 ? '' : 's'} prepaid</span>
+          </div>
+          ${prepayForm ? '' : `<button class="btn sm pri" data-a="open-prepay">${I.plus} Top up</button>`}
         </div>
-      </div>
+        <p class="prepay-x">${f.creditsUsed} of ${f.creditsTotal} used. Credits apply themselves to completed lessons, oldest first.</p>
+
+        ${prepayForm ? `
+          <div class="prepay-form">
+            <div class="two">
+              <div><label class="fl">Lessons</label><input type="number" min="1" data-f="ppCount" value="${prepayForm.lessonsCount}"></div>
+              <div><label class="fl">Paid (€)</label><input type="number" min="0" step="0.5" data-f="ppAmount" value="${prepayForm.amount}"></div>
+            </div>
+            <label class="fl">Date received</label>
+            <input type="date" data-f="ppDate" value="${prepayForm.date}">
+            <div class="acts">
+              <button class="btn" data-a="cancel-prepay">Cancel</button>
+              <button class="btn pri grow" data-a="save-prepay">Record payment</button>
+            </div>
+          </div>` : ''}
+
+        ${hist.length ? `<div class="phist">${hist.map(p => `
+          <div class="phist-r">
+            <span>${fmtDay(p.date)}</span>
+            <span>${p.lessonsCount} × lesson</span>
+            <b>${money(p.amount)}</b>
+            <button class="ib sm" data-a="ask-del-payment" data-id="${p.id}">${I.trash}</button>
+          </div>`).join('')}</div>` : ''}
+      </div>`}
+
+    <div class="acts">
+      ${isNew ? '' : `<button class="btn dang-o" data-a="ask-del-student">${I.trash}</button>`}
+      <button class="btn" data-a="close-student">Cancel</button>
+      <button class="btn pri grow" data-a="save-student">Save</button>
     </div>
-  `;
+  </div></div>`;
 }
 
-// ---------- Actions ----------
-async function loadAll() {
-  try {
-    const [students, lessons, payments] = await Promise.all([Api.getStudents(), Api.getLessons(), Api.getPayments()]);
-    state.students = students;
-    state.lessons = lessons;
-    state.payments = payments;
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
-  }
-  state.loaded = true;
-  render();
+function confirmModalHTML() {
+  return `<div class="ov top" data-ov="confirm"><div class="sheet narrow">
+    <p class="cmsg">${esc(confirmModal.message)}</p>
+    <div class="acts">
+      <button class="btn grow" data-a="cancel-confirm">Cancel</button>
+      <button class="btn dang grow" data-a="do-confirm">${esc(confirmModal.verb || 'Delete')}</button>
+    </div>
+  </div></div>`;
 }
 
-function openNewLesson(dateOverride) {
-  if (state.students.length === 0) {
-    state.tab = 'students';
-    studentModal = { id: null, name: '', subject: SUBJECT_OPTIONS[0], grade: '', rate: 20 };
-    render();
-    return;
-  }
+// ---------- Openers ----------
+function statusForDate(date) {
+  return date < todayISO() ? 'completed' : 'scheduled';
+}
+function openNewLesson(date) {
+  if (!state.students.length) { state.tab = 'students'; openNewStudent(); return; }
   const s = state.students[0];
+  const d = date || todayISO();
   lessonModal = {
-    id: null, studentId: s.id, date: dateOverride || todayISO(), time: '15:00',
-    duration: 60, subject: s.subject, amount: s.rate, status: 'scheduled', paid: false, notes: '',
-    extraDates: [],
+    id: null, studentId: s.id, date: d, time: '15:00', duration: 60,
+    subject: s.subject, amount: s.rate, status: statusForDate(d),
+    paidCash: false, viaPrepay: false, notes: '', extra: [],
   };
   render();
 }
+function openNewStudent() {
+  studentModal = { id: null, name: '', subject: SUBJECTS[0], grade: '', rate: 20 };
+  prepayForm = null;
+  render();
+}
 
-async function saveLessonModal() {
+// ---------- Saves ----------
+function saveLesson() {
   const f = lessonModal;
   if (!f.studentId || !f.date || !f.time) return;
-  try {
-    if (f.id) {
-      const updated = await Api.updateLesson(f.id, f);
-      state.lessons = state.lessons.map(l => (l.id === f.id ? updated : l));
-    } else {
-      const dates = [f.date, ...(f.extraDates || [])];
-      const created = await Promise.all(dates.map(date => Api.createLesson({ ...f, date })));
-      state.lessons = [...state.lessons, ...created];
-    }
+  const body = {
+    studentId: f.studentId, time: f.time, duration: f.duration, subject: f.subject,
+    amount: f.amount, status: f.status, paidCash: f.paidCash, notes: f.notes,
+  };
+  if (f.id) {
     lessonModal = null;
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
+    mutate('/lessons/' + f.id, { method: 'PUT', body: JSON.stringify({ ...body, date: f.date }) });
+  } else {
+    const dates = [f.date, ...f.extra];
+    lessonModal = null;
+    mutate('/lessons', { method: 'POST', body: JSON.stringify({ ...body, dates }) });
   }
-  render();
 }
 
-async function toggleLessonPaid(id) {
-  try {
-    const result = await Api.togglePaid(id);
-    state.lessons = state.lessons.map(l => (l.id === id ? { ...l, paid: result.paid, viaPrepay: result.viaPrepay } : l));
-    // Re-fetch students in case a prepay credit was refunded server-side.
-    state.students = await Api.getStudents();
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
-  }
-  render();
-}
-
-async function useLessonPrepayFromModal() {
-  if (!lessonModal || !lessonModal.id) return;
-  try {
-    const result = await Api.useLessonPrepay(lessonModal.id);
-    state.lessons = state.lessons.map(l => (l.id === lessonModal.id ? { ...l, paid: true, viaPrepay: true } : l));
-    state.students = state.students.map(s => (s.id === lessonModal.studentId ? { ...s, prepaidBalance: result.newBalance } : s));
-    lessonModal.paid = true;
-    lessonModal.viaPrepay = true;
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
-  }
-  render();
-}
-
-async function saveStudentModal() {
+function saveStudent() {
   const f = studentModal;
-  if (!f.name || !f.name.trim()) return;
-  try {
-    if (f.id) {
-      const updated = await Api.updateStudent(f.id, f);
-      state.students = state.students.map(s => (s.id === f.id ? updated : s));
-    } else {
-      const color = STUDENT_COLORS[state.students.length % STUDENT_COLORS.length];
-      const created = await Api.createStudent({ ...f, color });
-      state.students = [...state.students, created];
-    }
-    studentModal = null;
-    prepayForm = null;
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
+  if (!f.name.trim()) return;
+  const body = { name: f.name.trim(), subject: f.subject, grade: f.grade, rate: f.rate, color: f.color };
+  if (f.id) {
+    studentModal = null; prepayForm = null;
+    mutate('/students/' + f.id, { method: 'PUT', body: JSON.stringify(body) });
+  } else {
+    body.color = COLORS[state.students.length % COLORS.length];
+    studentModal = null; prepayForm = null;
+    mutate('/students', { method: 'POST', body: JSON.stringify(body) });
   }
+}
+
+async function savePrepay() {
+  const f = studentModal, p = prepayForm;
+  if (!p || !Number(p.lessonsCount)) return;
+  const id = f.id;
+  prepayForm = null;
+  await mutate('/students/' + id + '/prepayments', {
+    method: 'POST',
+    body: JSON.stringify({ lessonsCount: Number(p.lessonsCount), amount: Number(p.amount), date: p.date }),
+  });
+  // Keep the sheet open, refreshed with the new balance.
+  const fresh = studentById(id);
+  if (fresh && studentModal) studentModal = { ...fresh };
   render();
 }
 
-async function recordPrepayment() {
-  if (!studentModal || !prepayForm) return;
-  const lessonsCount = Number(prepayForm.lessonsCount);
-  const amount = Number(prepayForm.amount);
-  if (!lessonsCount || lessonsCount <= 0 || Number.isNaN(amount)) return;
-  try {
-    const result = await Api.addPrepayment(studentModal.id, { lessonsCount, amount });
-    state.students = state.students.map(s => (s.id === studentModal.id ? result.student : s));
-    state.payments = [result.payment, ...state.payments];
-    studentModal.prepaidBalance = result.student.prepaidBalance;
-    prepayForm = null;
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
-  }
-  render();
-}
-
-async function performConfirmedDelete() {
+async function doConfirm() {
   const c = confirmModal;
-  try {
-    if (c.type === 'lesson') {
-      await Api.deleteLesson(c.id);
-      state.lessons = state.lessons.filter(l => l.id !== c.id);
-      state.students = await Api.getStudents();
-    } else if (c.type === 'student') {
-      await Api.deleteStudent(c.id);
-      state.students = state.students.filter(s => s.id !== c.id);
-      state.lessons = state.lessons.filter(l => l.studentId !== c.id);
-    } else if (c.type === 'reset-all') {
-      await Api.resetAll();
-      state.students = [];
-      state.lessons = [];
-      state.payments = [];
-    }
-    state.saveError = false;
-  } catch (e) {
-    console.error(e);
-    state.saveError = true;
-  }
   confirmModal = null;
-  lessonModal = null;
-  studentModal = null;
-  render();
+  if (c.type === 'lesson') { lessonModal = null; await mutate('/lessons/' + c.id, { method: 'DELETE' }); }
+  else if (c.type === 'student') { studentModal = null; await mutate('/students/' + c.id, { method: 'DELETE' }); }
+  else if (c.type === 'payment') {
+    const sid = studentModal ? studentModal.id : null;
+    await mutate('/payments/' + c.id, { method: 'DELETE' });
+    const fresh = sid ? studentById(sid) : null;
+    if (fresh && studentModal) studentModal = { ...fresh };
+    render();
+  }
+  else if (c.type === 'reset') { await mutate('/reset', { method: 'POST' }); }
 }
 
-// ---------- Event delegation ----------
+// ---------- Events ----------
 document.addEventListener('click', (e) => {
-  const overlay = e.target.closest('.modal-overlay');
-  if (overlay && e.target === overlay) {
-    const which = overlay.dataset.modal;
-    if (which === 'confirm') confirmModal = null;
-    else if (which === 'lesson') lessonModal = null;
-    else if (which === 'student') { studentModal = null; prepayForm = null; }
+  const ov = e.target.closest('.ov');
+  if (ov && e.target === ov) {
+    if (ov.dataset.ov === 'confirm') confirmModal = null;
+    else if (ov.dataset.ov === 'lesson') lessonModal = null;
+    else { studentModal = null; prepayForm = null; }
     render();
     return;
   }
-
-  const el = e.target.closest('[data-action]');
+  const el = e.target.closest('[data-a]');
   if (!el) return;
-  const action = el.dataset.action;
+  const a = el.dataset.a, v = el.dataset.v, id = el.dataset.id;
 
-  switch (action) {
-    case 'set-tab': state.tab = el.dataset.tab; render(); break;
+  switch (a) {
+    case 'tab': state.tab = v; render(); break;
     case 'new-lesson': openNewLesson(todayISO()); break;
-    case 'new-lesson-on-date': openNewLesson(state.selectedDate); break;
-    case 'new-student': studentModal = { id: null, name: '', subject: SUBJECT_OPTIONS[0], grade: '', rate: 20 }; render(); break;
+    case 'new-lesson-here': openNewLesson(state.selectedDate); break;
+    case 'new-student': openNewStudent(); break;
+    case 'open-lesson': {
+      const l = lessonById(id);
+      if (l) { lessonModal = { ...l, extra: [] }; render(); }
+      break;
+    }
     case 'edit-student': {
-      const s = studentById(el.dataset.id);
+      const s = studentById(id);
       if (s) { studentModal = { ...s }; prepayForm = null; render(); }
       break;
     }
-    case 'delete-student':
-      confirmModal = { type: 'student', id: el.dataset.id, message: 'Delete this student? Their lessons will be deleted too.' };
-      render();
-      break;
-    case 'open-lesson': {
-      const l = state.lessons.find(x => x.id === el.dataset.id);
-      if (l) { lessonModal = { ...l }; render(); }
-      break;
-    }
-    case 'toggle-paid': toggleLessonPaid(el.dataset.id); break;
-    case 'cal-prev': state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() - 1, 1); render(); break;
-    case 'cal-next': state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() + 1, 1); render(); break;
-    case 'select-date': state.selectedDate = el.dataset.date; render(); break;
-    case 'filter-status': state.filterStatus = el.dataset.value; render(); break;
-    case 'filter-paid': state.filterPaid = (state.filterPaid === el.dataset.value ? 'all' : el.dataset.value); render(); break;
-    case 'close-lesson-modal': lessonModal = null; render(); break;
-    case 'close-student-modal': studentModal = null; prepayForm = null; render(); break;
-    case 'save-lesson': saveLessonModal(); break;
-    case 'save-student': saveStudentModal(); break;
-    case 'delete-lesson-from-modal':
-      confirmModal = { type: 'lesson', id: lessonModal.id, message: 'Delete this lesson?' };
-      render();
-      break;
-    case 'set-status': lessonModal.status = el.dataset.value; render(); break;
-    case 'toggle-modal-paid': lessonModal.paid = !lessonModal.paid; lessonModal.viaPrepay = false; render(); break;
-    case 'use-prepay-in-modal': useLessonPrepayFromModal(); break;
-    case 'open-prepay': prepayForm = { lessonsCount: 1, amount: studentModal.rate }; render(); break;
-    case 'cancel-prepay': prepayForm = null; render(); break;
-    case 'record-prepay': recordPrepayment(); break;
-    case 'add-extra-date': {
-      const input = document.getElementById('extraDateInput');
-      if (input && input.value && lessonModal) {
-        if (!lessonModal.extraDates) lessonModal.extraDates = [];
-        if (input.value !== lessonModal.date && !lessonModal.extraDates.includes(input.value)) {
-          lessonModal.extraDates.push(input.value);
-          lessonModal.extraDates.sort();
+    case 'toggle-paid': mutate('/lessons/' + id + '/paid', { method: 'PATCH' }); break;
+    case 'complete-past': mutate('/lessons/complete-past', { method: 'POST' }); break;
+    case 'cal':
+      state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() + Number(v), 1);
+      render(); break;
+    case 'pick-date': state.selectedDate = v; render(); break;
+    case 'filter-status':
+      state.filterStatus = state.filterStatus === v ? 'all' : v; render(); break;
+    case 'filter-paid':
+      state.filterPaid = state.filterPaid === v ? 'all' : v; render(); break;
+    case 'filter-clear':
+      state.filterStatus = 'all'; state.filterPaid = 'all'; render(); break;
+    case 'set-status':
+      lessonModal.status = v; render(); break;
+    case 'add-date': {
+      const inp = document.getElementById('xdate');
+      if (inp && inp.value && lessonModal) {
+        const d = inp.value;
+        if (d !== lessonModal.date && !lessonModal.extra.includes(d)) {
+          lessonModal.extra.push(d); lessonModal.extra.sort();
         }
         render();
       }
       break;
     }
-    case 'remove-extra-date': {
-      if (lessonModal && lessonModal.extraDates) {
-        lessonModal.extraDates.splice(Number(el.dataset.index), 1);
-        render();
+    case 'rm-date': lessonModal.extra.splice(Number(v), 1); render(); break;
+    case 'add-weekly': {
+      const wk = document.getElementById('wk');
+      const n = wk ? Math.min(52, Math.max(1, Number(wk.value) || 4)) : 4;
+      const all = [lessonModal.date, ...lessonModal.extra].sort();
+      const cur = parseISO(all[all.length - 1]);
+      for (let i = 0; i < n; i++) {
+        cur.setDate(cur.getDate() + 7);
+        const iso = toISO(cur);
+        if (!lessonModal.extra.includes(iso) && iso !== lessonModal.date) lessonModal.extra.push(iso);
       }
-      break;
-    }
-    case 'add-weekly-dates': {
-      if (!lessonModal) break;
-      const weeksInput = document.getElementById('repeatWeeksInput');
-      const count = weeksInput ? (Number(weeksInput.value) || 4) : 4;
-      if (!lessonModal.extraDates) lessonModal.extraDates = [];
-      const allDates = [lessonModal.date, ...lessonModal.extraDates].sort();
-      const [y, m, d] = allDates[allDates.length - 1].split('-').map(Number);
-      const cursor = new Date(y, m - 1, d);
-      for (let i = 0; i < count; i++) {
-        cursor.setDate(cursor.getDate() + 7);
-        const iso = toISODate(cursor);
-        if (!lessonModal.extraDates.includes(iso)) lessonModal.extraDates.push(iso);
-      }
-      lessonModal.extraDates.sort();
+      lessonModal.extra.sort();
       render();
       break;
     }
-    case 'open-reset-confirm':
-      confirmModal = { type: 'reset-all', id: null, message: 'Delete every student, lesson, and payment? This cannot be undone.' };
-      render();
-      break;
+    case 'modal-pay': lessonModal.paidCash = true; render(); break;
+    case 'modal-unpay': lessonModal.paidCash = false; lessonModal.viaPrepay = false; render(); break;
+    case 'save-lesson': saveLesson(); break;
+    case 'close-lesson': lessonModal = null; render(); break;
+    case 'save-student': saveStudent(); break;
+    case 'close-student': studentModal = null; prepayForm = null; render(); break;
+    case 'open-prepay':
+      prepayForm = { lessonsCount: 4, amount: (studentModal.rate * 4).toFixed(2), date: todayISO() };
+      render(); break;
+    case 'cancel-prepay': prepayForm = null; render(); break;
+    case 'save-prepay': savePrepay(); break;
+    case 'ask-del-lesson':
+      confirmModal = { type: 'lesson', id: lessonModal.id, message: 'Delete this lesson? Any credit it used goes back to the student.' };
+      render(); break;
+    case 'ask-del-student':
+      confirmModal = { type: 'student', id: studentModal.id, message: `Delete ${studentModal.name}? Their lessons and payment history go too.` };
+      render(); break;
+    case 'ask-del-payment':
+      confirmModal = { type: 'payment', id, message: 'Remove this payment? Lessons it covered become unpaid again.' };
+      render(); break;
+    case 'ask-reset':
+      confirmModal = { type: 'reset', message: 'Delete every student, lesson and payment? This cannot be undone.', verb: 'Erase all' };
+      render(); break;
     case 'cancel-confirm': confirmModal = null; render(); break;
-    case 'confirm-delete': performConfirmedDelete(); break;
+    case 'do-confirm': doConfirm(); break;
   }
 });
 
-// Continuous-typing fields: update state without a full re-render, so focus/cursor is preserved.
+// Typing: update state silently so focus and cursor survive.
 document.addEventListener('input', (e) => {
-  const field = e.target.dataset.field;
-  if (!field || e.target.tagName === 'SELECT') return;
+  const f = e.target.dataset.f;
+  if (!f || e.target.tagName === 'SELECT') return;
 
   if (lessonModal) {
-    if (field === 'duration') {
-      const mins = Number(e.target.value) || 0;
-      lessonModal.duration = mins;
+    if (f === 'duration') {
+      lessonModal.duration = Number(e.target.value) || 0;
       const s = studentById(lessonModal.studentId);
       if (s) {
-        lessonModal.amount = Number((s.rate * (mins / 60)).toFixed(2));
-        const amountInput = document.querySelector('[data-field="amount"]');
-        if (amountInput) amountInput.value = lessonModal.amount;
+        lessonModal.amount = Number((s.rate * (lessonModal.duration / 60)).toFixed(2));
+        const amt = document.querySelector('[data-f="amount"]');
+        if (amt) amt.value = lessonModal.amount;
       }
       return;
     }
-    if (field === 'amount') { lessonModal.amount = Number(e.target.value) || 0; return; }
-    if (field === 'date') { lessonModal.date = e.target.value; return; }
-    if (field === 'time') { lessonModal.time = e.target.value; return; }
-    if (field === 'notes') { lessonModal.notes = e.target.value; return; }
+    if (f === 'amount') { lessonModal.amount = Number(e.target.value) || 0; return; }
+    if (f === 'time') { lessonModal.time = e.target.value; return; }
+    if (f === 'notes') { lessonModal.notes = e.target.value; return; }
+    if (f === 'date') {
+      const wasAuto = lessonModal.status === statusForDate(lessonModal.date);
+      lessonModal.date = e.target.value;
+      // Keep status sensible for the new date unless it was set by hand.
+      if (wasAuto && !lessonModal.id) { lessonModal.status = statusForDate(e.target.value); render(); }
+      return;
+    }
   }
   if (studentModal) {
-    if (field === 'name') { studentModal.name = e.target.value; return; }
-    if (field === 'grade') { studentModal.grade = e.target.value; return; }
-    if (field === 'rate') { studentModal.rate = Number(e.target.value) || 0; return; }
+    if (f === 'name') { studentModal.name = e.target.value; return; }
+    if (f === 'grade') { studentModal.grade = e.target.value; return; }
+    if (f === 'rate') {
+      studentModal.rate = Number(e.target.value) || 0;
+      if (prepayForm) {
+        prepayForm.amount = (studentModal.rate * Number(prepayForm.lessonsCount || 0)).toFixed(2);
+        const amt = document.querySelector('[data-f="ppAmount"]');
+        if (amt) amt.value = prepayForm.amount;
+      }
+      return;
+    }
   }
   if (prepayForm) {
-    if (field === 'prepayLessons') { prepayForm.lessonsCount = Number(e.target.value) || 0; return; }
-    if (field === 'prepayAmount') { prepayForm.amount = Number(e.target.value) || 0; return; }
+    if (f === 'ppCount') {
+      prepayForm.lessonsCount = Number(e.target.value) || 0;
+      prepayForm.amount = (Number(studentModal.rate) * prepayForm.lessonsCount).toFixed(2);
+      const amt = document.querySelector('[data-f="ppAmount"]');
+      if (amt) amt.value = prepayForm.amount;
+      return;
+    }
+    if (f === 'ppAmount') { prepayForm.amount = e.target.value; return; }
+    if (f === 'ppDate') { prepayForm.date = e.target.value; return; }
   }
 });
 
-// Select + checkbox fields: discrete choice, full re-render is fine here.
+// Dropdowns: discrete, safe to re-render.
 document.addEventListener('change', (e) => {
-  const field = e.target.dataset.field;
-  if (!field) return;
+  const f = e.target.dataset.f;
+  const filterField = e.target.dataset.filter || (e.target.classList.contains('who') ? 'filterStudent' : null);
+  if (filterField) { state.filterStudent = e.target.value; render(); return; }
+  if (!f || e.target.tagName !== 'SELECT') return;
 
-  if (e.target.tagName !== 'SELECT') return;
-
-  if (lessonModal && field === 'studentId') {
+  if (lessonModal && f === 'studentId') {
     lessonModal.studentId = e.target.value;
     const s = studentById(e.target.value);
     if (s) {
       lessonModal.subject = s.subject;
       lessonModal.amount = Number((s.rate * (lessonModal.duration / 60)).toFixed(2));
     }
-    render();
-    return;
+    render(); return;
   }
-  if (lessonModal && field === 'subject') { lessonModal.subject = e.target.value; return; }
-  if (studentModal && field === 'subject') { studentModal.subject = e.target.value; return; }
+  if (lessonModal && f === 'subject') { lessonModal.subject = e.target.value; return; }
+  if (studentModal && f === 'subject') { studentModal.subject = e.target.value; return; }
 });
 
 // ---------- Init ----------
-render();
-loadAll();
+(async function init() {
+  render();
+  try {
+    const data = await call('/state');
+    state.students = data.students;
+    state.lessons = data.lessons;
+    state.payments = data.payments;
+  } catch (e) {
+    state.error = 'Could not reach the server.';
+  }
+  state.loaded = true;
+  render();
+})();
