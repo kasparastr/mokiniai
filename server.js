@@ -271,6 +271,20 @@ app.post('/api/students/:id/prepayments', (req, res) => {
   });
 });
 
+app.put('/api/payments/:id', (req, res) => {
+  mutate(res, async (client) => {
+    const { lessonsCount, amount, date, notes } = req.body;
+    const count = Number(lessonsCount);
+    if (!count || count <= 0) throw new Error('Lesson count must be at least 1');
+    const { rows } = await client.query(
+      'UPDATE payments SET lessons_count=$1, amount=$2, date=$3, notes=$4 WHERE id=$5 RETURNING student_id',
+      [count, amount || 0, date, notes || '', req.params.id]
+    );
+    if (!rows[0]) throw new Error('Payment not found');
+    return rows[0].student_id;
+  });
+});
+
 app.delete('/api/payments/:id', (req, res) => {
   mutate(res, async (client) => {
     const { rows } = await client.query('DELETE FROM payments WHERE id=$1 RETURNING student_id', [req.params.id]);
@@ -322,6 +336,33 @@ app.patch('/api/lessons/:id/paid', (req, res) => {
     const nextCash = !(lesson.paid_cash || lesson.via_prepay);
     await client.query('UPDATE lessons SET paid_cash=$1 WHERE id=$2', [nextCash, req.params.id]);
     return lesson.student_id;
+  });
+});
+
+// Marks every outstanding lesson for one student as paid directly.
+// Prepay-covered lessons are left alone — they're already settled.
+app.post('/api/students/:id/settle', (req, res) => {
+  mutate(res, async (client) => {
+    await client.query(
+      `UPDATE lessons SET paid_cash = true
+       WHERE student_id = $1 AND status = 'completed'
+         AND paid_cash = false AND via_prepay = false`,
+      [req.params.id]
+    );
+    return req.params.id;
+  });
+});
+
+// Marks an arbitrary set of lessons paid (or unpaid) in one go.
+app.post('/api/lessons/bulk-paid', (req, res) => {
+  mutate(res, async (client) => {
+    const { ids, paid } = req.body;
+    if (!Array.isArray(ids) || !ids.length) throw new Error('No lessons selected');
+    await client.query(
+      'UPDATE lessons SET paid_cash = $1 WHERE id = ANY($2::text[])',
+      [!!paid, ids]
+    );
+    return null;
   });
 });
 
