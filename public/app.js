@@ -22,7 +22,10 @@ let state = {
   filterStudent: 'all',
   selecting: false,
   selected: {},
+  weekStart: mondayOf(new Date()),
 };
+
+const WIDE = () => window.matchMedia('(min-width: 860px)').matches;
 let lessonModal = null;
 let studentModal = null;
 let confirmModal = null;
@@ -60,6 +63,38 @@ function monthGrid(monthDate) {
   while (cells.length % 7) cells.push(null);
   return cells;
 }
+function mondayOf(d) {
+  const x = new Date(d);
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function minutesOf(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+function hhmm(mins) {
+  return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+}
+function weekLabel(start) {
+  const end = addDays(start, 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const left = sameMonth
+    ? String(start.getDate())
+    : start.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const right = end.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const year = start.getFullYear() !== new Date().getFullYear() ? ' ' + start.getFullYear() : '';
+  return `${left} – ${right}${year}`;
+}
+
+// Hex -> rgba, for translucent lesson blocks.
+function tint(hex, a) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
+}
+
 function esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
@@ -245,7 +280,7 @@ function nav() {
 function tabContent() {
   if (!state.students.length && state.tab !== 'students') return emptyStart();
   if (state.tab === 'overview') return overviewView();
-  if (state.tab === 'calendar') return calendarView();
+  if (state.tab === 'calendar') return WIDE() ? weekView() : calendarView();
   if (state.tab === 'lessons') return lessonsView();
   if (state.tab === 'students') return studentsView();
   return '';
@@ -439,6 +474,104 @@ function calendarView() {
         : '<p class="none">No lessons.</p>'}
     </div>
   </div>`;
+}
+
+// ---------- Week view (wide screens) ----------
+const SLOT_H = 46;           // px per hour
+const DEFAULT_START = 8 * 60;
+const DEFAULT_END = 21 * 60;
+
+function weekView() {
+  const days = Array.from({ length: 7 }, (_, i) => addDays(state.weekStart, i));
+  const isoDays = days.map(toISO);
+  const weekLessons = state.lessons.filter(l => isoDays.includes(l.date));
+
+  // Fit the grid to the day, but never crop a lesson out of view.
+  let from = DEFAULT_START, to = DEFAULT_END;
+  weekLessons.forEach(l => {
+    const s0 = minutesOf(l.time);
+    from = Math.min(from, Math.floor(s0 / 60) * 60);
+    to = Math.max(to, Math.ceil((s0 + l.duration) / 60) * 60);
+  });
+  const hours = [];
+  for (let m = from; m < to; m += 60) hours.push(m);
+  const todayIso = todayISO();
+
+  return `<div class="wrap wide">
+    <div class="wk-h">
+      <div class="wk-nav">
+        <button class="ib" data-a="wk" data-v="-1">${I.left}</button>
+        <span class="wk-title">${weekLabel(state.weekStart)}</span>
+        <button class="ib" data-a="wk" data-v="1">${I.right}</button>
+      </div>
+      <button class="btn sm ghost" data-a="wk-today">This week</button>
+    </div>
+
+    <div class="wk" style="--slot:${SLOT_H}px">
+      <div class="wk-corner"></div>
+      ${days.map((d, i) => {
+        const iso = isoDays[i];
+        const n = lessonsFor(iso).length;
+        return `<div class="wk-dh ${iso === todayIso ? 'today' : ''}">
+          <span class="wk-dn">${WEEKDAYS[i]}</span>
+          <span class="wk-dd">${d.getDate()}</span>
+          ${n ? `<span class="wk-dc">${n}</span>` : ''}
+        </div>`;
+      }).join('')}
+
+      <div class="wk-times">
+        ${hours.map(m => `<div class="wk-t" style="height:${SLOT_H}px"><span>${hhmm(m)}</span></div>`).join('')}
+      </div>
+
+      ${days.map((d, i) => {
+        const iso = isoDays[i];
+        const dayL = lessonsFor(iso);
+        return `<div class="wk-col ${iso === todayIso ? 'today' : ''}" style="height:${hours.length * SLOT_H}px">
+          ${hours.map(m => `<button class="wk-slot" style="height:${SLOT_H}px" data-a="slot" data-v="${iso}" data-t="${hhmm(m)}" aria-label="Add lesson ${iso} ${hhmm(m)}"></button>`).join('')}
+          ${layoutDay(dayL, from).map(b => blockHTML(b)).join('')}
+        </div>`;
+      }).join('')}
+    </div>
+    <p class="wk-hint">Click an empty slot to book. Click a lesson to edit it.</p>
+  </div>`;
+}
+
+// Side-by-side placement for lessons that overlap in time.
+function layoutDay(lessons, from) {
+  const items = lessons
+    .map(l => ({ l, s: minutesOf(l.time), e: minutesOf(l.time) + Math.max(20, l.duration) }))
+    .sort((a, b) => a.s - b.s || a.e - b.e);
+  const out = [];
+  let cluster = [], clusterEnd = -1;
+  const flush = () => {
+    cluster.forEach((it, idx) => out.push({ ...it, from, col: idx, cols: cluster.length }));
+    cluster = []; clusterEnd = -1;
+  };
+  items.forEach(it => {
+    if (cluster.length && it.s >= clusterEnd) flush();
+    cluster.push(it);
+    clusterEnd = Math.max(clusterEnd, it.e);
+  });
+  if (cluster.length) flush();
+  return out;
+}
+
+function blockHTML(b) {
+  const l = b.l;
+  const st = studentById(l.studentId);
+  const c = st ? st.color : '#8a857e';
+  const top = ((b.s - b.from) / 60) * SLOT_H;
+  const h = Math.max(26, ((b.e - b.s) / 60) * SLOT_H - 3);
+  const w = 100 / b.cols;
+  const short = h < 42;
+  const state_cls = l.status === 'cancelled' ? 'off' : (l.status === 'completed' && !l.paid ? 'owe' : '');
+  return `<button class="wk-b ${state_cls} ${short ? 'tiny' : ''}"
+    data-a="open-lesson" data-id="${l.id}"
+    style="top:${top}px;height:${h}px;left:calc(${b.col * w}% + 2px);width:calc(${w}% - 4px);
+           background:${tint(c, .14)};border-left:3px solid ${c}">
+    <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
+    <span class="wk-bt">${esc(l.time)}${short ? '' : `–${hhmm(b.e)}`}${l.status === 'completed' && !l.paid ? ' · unpaid' : ''}</span>
+  </button>`;
 }
 
 // ---------- Lessons ----------
@@ -836,7 +969,10 @@ document.addEventListener('click', (e) => {
     case 'cal':
       state.calendarMonth = new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth() + Number(v), 1);
       render(); break;
-    case 'pick-date': state.selectedDate = v; render(); break;
+    case 'pick-date':
+      state.selectedDate = v;
+      state.weekStart = mondayOf(parseISO(v));
+      render(); break;
     case 'filter-status':
       state.filterStatus = state.filterStatus === v ? 'all' : v; render(); break;
     case 'filter-paid':
@@ -911,6 +1047,23 @@ document.addEventListener('click', (e) => {
       state.filterStatus = 'all';
       state.tab = 'lessons';
       render(); break;
+    case 'wk':
+      state.weekStart = addDays(state.weekStart, 7 * Number(v));
+      render(); break;
+    case 'wk-today':
+      state.weekStart = mondayOf(new Date());
+      render(); break;
+    case 'slot': {
+      // Book straight into the clicked hour.
+      if (!state.students.length) { state.tab = 'students'; openNewStudent(); break; }
+      const st0 = state.students[0];
+      lessonModal = {
+        id: null, studentId: st0.id, date: v, time: el.dataset.t, duration: 60,
+        subject: st0.subject, amount: st0.rate, status: statusForDate(v),
+        paidCash: false, viaPrepay: false, notes: '', extra: [],
+      };
+      render(); break;
+    }
     case 'sel-start': state.selecting = true; state.selected = {}; render(); break;
     case 'sel-cancel': state.selecting = false; state.selected = {}; render(); break;
     case 'toggle-sel':
@@ -1024,6 +1177,15 @@ document.addEventListener('change', (e) => {
   if (lessonModal && f === 'subject') { lessonModal.subject = e.target.value; return; }
   if (studentModal && f === 'subject') { studentModal.subject = e.target.value; return; }
 });
+
+// Swap between month-with-dots and the week grid when the window crosses
+// the breakpoint (e.g. rotating a tablet, or resizing on desktop).
+(function watchWidth() {
+  const mq = window.matchMedia('(min-width: 860px)');
+  const on = () => { if (state.loaded) render(); };
+  if (mq.addEventListener) mq.addEventListener('change', on);
+  else if (mq.addListener) mq.addListener(on);
+})();
 
 // ---------- Init ----------
 (async function init() {
