@@ -412,3 +412,74 @@ main { flex: 1; padding-bottom: 108px; }
   background: rgba(138,98,22,.13); font-size: 11px; font-weight: 600;
 }
 .prepay-x b { color: var(--gold); font-variant-numeric: tabular-nums; }
+
+/* ---------- Week grid (wide screens only) ---------- */
+.wrap.wide { max-width: 1140px; }
+
+.wk-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.wk-nav { display: flex; align-items: center; gap: 4px; }
+.wk-title { font-family: var(--serif); font-size: 17px; font-weight: 600; min-width: 168px; text-align: center; }
+
+.wk {
+  display: grid;
+  grid-template-columns: 56px repeat(7, minmax(0, 1fr));
+  grid-template-rows: auto 1fr;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
+  overflow: hidden;
+}
+.wk-corner { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line-2); background: #fbfaf7; }
+.wk-dh {
+  display: flex; align-items: baseline; justify-content: center; gap: 6px;
+  padding: 9px 4px; background: #fbfaf7;
+  border-bottom: 1px solid var(--line); border-right: 1px solid var(--line-2);
+}
+.wk-dh:last-child { border-right: none; }
+.wk-dn { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3); }
+.wk-dd { font-family: var(--serif); font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.wk-dh.today { background: var(--green-bg); }
+.wk-dh.today .wk-dn, .wk-dh.today .wk-dd { color: var(--green-2); }
+.wk-dc {
+  font-size: 10px; font-weight: 600; color: var(--ink-3);
+  background: var(--paper); border: 1px solid var(--line); border-radius: 99px; padding: 0 5px;
+}
+
+.wk-times { border-right: 1px solid var(--line-2); background: #fbfaf7; }
+.wk-t { position: relative; border-bottom: 1px solid var(--line-2); }
+.wk-t span {
+  position: absolute; top: -7px; right: 7px;
+  font-size: 10.5px; color: var(--ink-3); font-variant-numeric: tabular-nums; background: #fbfaf7; padding: 0 2px;
+}
+.wk-t:first-child span { top: 3px; }
+
+.wk-col { position: relative; border-right: 1px solid var(--line-2); }
+.wk-col:last-child { border-right: none; }
+.wk-col.today { background: rgba(31,107,74,.028); }
+.wk-slot { display: block; width: 100%; border-bottom: 1px solid var(--line-2); }
+.wk-slot:hover { background: rgba(31,107,74,.07); box-shadow: inset 0 0 0 1px rgba(31,107,74,.18); }
+
+.wk-b {
+  position: absolute; z-index: 2; overflow: hidden; text-align: left;
+  display: flex; flex-direction: column; justify-content: center; gap: 1px;
+  padding: 4px 6px; border-radius: 5px; border: 1px solid transparent;
+}
+.wk-b:hover { filter: brightness(.96); box-shadow: 0 2px 7px rgba(0,0,0,.11); }
+.wk-bn {
+  font-size: 12.5px; font-weight: 600; color: var(--ink); line-height: 1.2;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wk-bt {
+  font-size: 10.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; line-height: 1.15;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wk-b.tiny { padding: 2px 6px; flex-direction: row; align-items: baseline; gap: 5px; }
+.wk-b.tiny .wk-bn { font-size: 11.5px; }
+.wk-b.tiny .wk-bt { font-size: 10px; }
+.wk-b.off { opacity: .45; }
+.wk-b.off .wk-bn { text-decoration: line-through; }
+.wk-b.owe { border-color: rgba(156,53,33,.4); }
+.wk-b.owe .wk-bt { color: var(--rust); font-weight: 600; }
+
+.wk-hint { font-size: 11.5px; color: var(--ink-3); text-align: center; margin: 11px 0 0; }
+
+/* The week grid is desktop-only; mobile keeps the month view with dots. */
+@media (max-width: 859px) { .wk, .wk-h, .wk-hint { display: none; } }
