@@ -350,6 +350,17 @@ app.delete('/api/lessons/:id', async (req, res) => {
   }
 });
 
+// Wipes everything. Used by the "Reset all data" button in the Students tab.
+app.post('/api/reset', async (req, res) => {
+  try {
+    await pool.query('TRUNCATE TABLE lessons, payments, students CASCADE');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to reset data' });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 initDb()
   .then(() => {
