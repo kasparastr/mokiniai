@@ -86,6 +86,20 @@ async function initDb() {
     );
   `);
 
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS series (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      time TEXT NOT NULL,
+      duration INTEGER NOT NULL,
+      subject TEXT NOT NULL,
+      amount NUMERIC NOT NULL,
+      start_date TEXT NOT NULL,
+      active BOOLEAN NOT NULL DEFAULT true
+    );
+  `);
+  await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS series_id TEXT`);
+
   // Migrations for databases created by earlier versions.
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS grade TEXT DEFAULT ''`);
   await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS via_prepay BOOLEAN NOT NULL DEFAULT false`);
@@ -99,6 +113,51 @@ async function initDb() {
     await pool.query(`ALTER TABLE lessons ALTER COLUMN paid DROP NOT NULL`);
   }
   // prepaid_balance is no longer used; the balance is derived. Harmless if present.
+}
+
+// ---------- Weekly series ----------
+// Rather than modelling infinite recurrence, an active series keeps a rolling
+// window of real lesson rows generated ahead. Every occurrence stays an
+// ordinary, individually editable lesson.
+const HORIZON_DAYS = 70;
+
+function isoOf(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function fromIso(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+async function extendSeries(client) {
+  const horizon = new Date();
+  horizon.setDate(horizon.getDate() + HORIZON_DAYS);
+  const hIso = isoOf(horizon);
+
+  const { rows: all } = await client.query('SELECT * FROM series WHERE active = true');
+  for (const s of all) {
+    const last = await client.query('SELECT MAX(date) AS m FROM lessons WHERE series_id = $1', [s.id]);
+    const cursorIso = last.rows[0].m || s.start_date;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const d = fromIso(cursorIso);
+    // Never invent lessons in the past: if the series' last occurrence is
+    // behind us, jump straight to the next same-weekday slot from today.
+    if (d < today) {
+      const weeks = Math.ceil((today - d) / (7 * 86400000));
+      d.setDate(d.getDate() + weeks * 7);
+      d.setDate(d.getDate() - 7); // step back one; the loop advances first
+    }
+    for (let guard = 0; guard < 60; guard++) {
+      d.setDate(d.getDate() + 7);
+      const iso = isoOf(d);
+      if (iso > hIso) break;
+      await client.query(
+        `INSERT INTO lessons (id, student_id, date, time, duration, subject, amount, status, paid_cash, via_prepay, notes, series_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,'scheduled',false,false,'',$8)`,
+        [crypto.randomUUID(), s.student_id, iso, s.time, s.duration, s.subject, s.amount, s.id]
+      );
+    }
+  }
 }
 
 // ---------- Reconciliation ----------
@@ -159,6 +218,7 @@ function mapLesson(r) {
     viaPrepay: r.via_prepay,
     paid: r.paid_cash || r.via_prepay,
     notes: r.notes || '',
+    seriesId: r.series_id || null,
   };
 }
 function mapPayment(r) {
@@ -180,6 +240,7 @@ async function fullState(client) {
   const studentsRes = await q.query('SELECT * FROM students ORDER BY name');
   const lessonsRes = await q.query('SELECT * FROM lessons ORDER BY date, time');
   const paymentsRes = await q.query('SELECT * FROM payments ORDER BY date DESC');
+  const seriesRes = await q.query('SELECT * FROM series');
   const creditsRes = await q.query('SELECT student_id, COALESCE(SUM(lessons_count),0) AS c FROM payments GROUP BY student_id');
   const usedRes = await q.query('SELECT student_id, COUNT(*) AS c FROM lessons WHERE via_prepay = true GROUP BY student_id');
   const creditsById = {};
@@ -191,6 +252,10 @@ async function fullState(client) {
     students: studentsRes.rows.map(r => mapStudent(r, creditsById, usedById)),
     lessons: lessonsRes.rows.map(mapLesson),
     payments: paymentsRes.rows.map(mapPayment),
+    series: seriesRes.rows.map(r => ({
+      id: r.id, studentId: r.student_id, time: r.time, duration: r.duration,
+      subject: r.subject, amount: Number(r.amount), startDate: r.start_date, active: r.active,
+    })),
   };
 }
 
@@ -201,6 +266,7 @@ async function mutate(res, fn) {
   try {
     await client.query('BEGIN');
     const studentId = await fn(client);
+    await extendSeries(client);
     if (studentId) await reconcileStudent(client, studentId);
     else await reconcileAll(client);
     const state = await fullState(client);
@@ -217,11 +283,20 @@ async function mutate(res, fn) {
 
 // ---------- Read ----------
 app.get('/api/state', async (req, res) => {
+  // Reading also tops the rolling window up, so an open series never runs dry.
+  const client = await pool.connect();
   try {
-    res.json(await fullState());
+    await client.query('BEGIN');
+    await extendSeries(client);
+    const state = await fullState(client);
+    await client.query('COMMIT');
+    res.json(state);
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(e);
     res.status(500).json({ error: 'Failed to load data' });
+  } finally {
+    client.release();
   }
 });
 
@@ -373,6 +448,41 @@ app.delete('/api/lessons/:id', (req, res) => {
   });
 });
 
+// Turn a single lesson into an ongoing weekly booking.
+app.post('/api/lessons/:id/repeat', (req, res) => {
+  mutate(res, async (client) => {
+    const { rows } = await client.query('SELECT * FROM lessons WHERE id=$1', [req.params.id]);
+    if (!rows[0]) throw new Error('Lesson not found');
+    const l = rows[0];
+    if (l.series_id) throw new Error('This lesson already repeats');
+    const sid = crypto.randomUUID();
+    await client.query(
+      `INSERT INTO series (id, student_id, time, duration, subject, amount, start_date, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,true)`,
+      [sid, l.student_id, l.time, l.duration, l.subject, l.amount, l.date]
+    );
+    await client.query('UPDATE lessons SET series_id=$1 WHERE id=$2', [sid, req.params.id]);
+    return l.student_id;
+  });
+});
+
+// Stop an ongoing booking. Past and completed lessons are left alone; only
+// untouched future occurrences are cleared away.
+app.post('/api/series/:id/stop', (req, res) => {
+  mutate(res, async (client) => {
+    const { rows } = await client.query('SELECT * FROM series WHERE id=$1', [req.params.id]);
+    if (!rows[0]) throw new Error('Series not found');
+    const today = isoOf(new Date());
+    await client.query('UPDATE series SET active=false WHERE id=$1', [req.params.id]);
+    await client.query(
+      `DELETE FROM lessons
+       WHERE series_id=$1 AND date > $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+      [req.params.id, today]
+    );
+    return rows[0].student_id;
+  });
+});
+
 // Bulk: mark every past scheduled lesson as completed.
 app.post('/api/lessons/complete-past', (req, res) => {
   mutate(res, async (client) => {
@@ -384,7 +494,7 @@ app.post('/api/lessons/complete-past', (req, res) => {
 
 app.post('/api/reset', (req, res) => {
   mutate(res, async (client) => {
-    await client.query('TRUNCATE TABLE lessons, payments, students CASCADE');
+    await client.query('TRUNCATE TABLE lessons, payments, series, students CASCADE');
     return null;
   });
 });
