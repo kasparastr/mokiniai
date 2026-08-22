@@ -11,6 +11,7 @@ let state = {
   students: [],
   lessons: [],
   payments: [],
+  series: [],
   tab: 'overview',
   loaded: false,
   busy: false,
@@ -77,6 +78,11 @@ function minutesOf(hhmm) {
 function hhmm(mins) {
   return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
 }
+// Grid clock labels wrap past midnight: 1440 -> 00:00, 1500 -> 01:00.
+function clockLabel(mins) {
+  return `${String(Math.floor(mins / 60) % 24).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+}
+
 function weekLabel(start) {
   const end = addDays(start, 6);
   const sameMonth = start.getMonth() === end.getMonth();
@@ -120,6 +126,7 @@ async function mutate(path, options) {
     state.students = data.students;
     state.lessons = data.lessons;
     state.payments = data.payments;
+    state.series = data.series || [];
   } catch (e) {
     state.error = e.message;
   }
@@ -206,6 +213,7 @@ const I = {
   right: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
+  repeat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
   coins: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
 };
 function icon(name, cls) { return `<span class="icn ${cls || ''}">${I[name]}</span>`; }
@@ -412,7 +420,7 @@ function lessonRow(l, opts) {
             <span class="pip" style="background:${st ? st.color : '#a8a29e'}"></span>
             ${st ? esc(st.name) : 'Unknown'}
           </span>
-          <span class="row-sub">${esc(l.subject)}${st && st.grade ? ' · ' + esc(st.grade) : ''}${l.status === 'scheduled' ? '' : ' · ' + STATUS_LABELS[l.status]}</span>
+          <span class="row-sub">${l.seriesId ? '<span class="rep-i">' + I.repeat + '</span>' : ''}${esc(l.subject)}${st && st.grade ? ' · ' + esc(st.grade) : ''}${l.status === 'scheduled' ? '' : ' · ' + STATUS_LABELS[l.status]}</span>
         </span>
       </button>
       <button class="row-pay" data-a="toggle-paid" data-id="${l.id}" title="Toggle paid">
@@ -477,22 +485,36 @@ function calendarView() {
 }
 
 // ---------- Week view (wide screens) ----------
-const SLOT_H = 46;           // px per hour
-const DEFAULT_START = 8 * 60;
-const DEFAULT_END = 21 * 60;
+const SLOT_H = 46;              // px per hour
+const DEFAULT_START = 8 * 60;   // 08:00
+const DEFAULT_END = 25 * 60;    // 01:00 the following morning
+const DAY_BREAK = 6 * 60;       // before 06:00 counts as the previous night
 
 function weekView() {
   const days = Array.from({ length: 7 }, (_, i) => addDays(state.weekStart, i));
   const isoDays = days.map(toISO);
-  const weekLessons = state.lessons.filter(l => isoDays.includes(l.date));
 
-  // Fit the grid to the day, but never crop a lesson out of view.
-  let from = DEFAULT_START, to = DEFAULT_END;
-  weekLessons.forEach(l => {
-    const s0 = minutesOf(l.time);
-    from = Math.min(from, Math.floor(s0 / 60) * 60);
-    to = Math.max(to, Math.ceil((s0 + l.duration) / 60) * 60);
+  // Each column covers one day from 08:00 through 01:00 of the next morning.
+  // A lesson dated Tuesday 00:30 therefore belongs in Monday's column, drawn
+  // at 24:30 on the grid.
+  const columns = isoDays.map((iso, i) => {
+    const nextIso = toISO(addDays(state.weekStart, i + 1));
+    const own = state.lessons
+      .filter(l => l.date === iso && minutesOf(l.time) >= DAY_BREAK)
+      .map(l => ({ l, s: minutesOf(l.time) }));
+    const spill = state.lessons
+      .filter(l => l.date === nextIso && minutesOf(l.time) < DAY_BREAK)
+      .map(l => ({ l, s: minutesOf(l.time) + 1440 }));
+    return own.concat(spill);
   });
+
+  // Fit the grid to what's actually booked, never cropping anything.
+  let from = DEFAULT_START, to = DEFAULT_END;
+  columns.forEach(col => col.forEach(({ l, s }) => {
+    from = Math.min(from, Math.floor(s / 60) * 60);
+    to = Math.max(to, Math.ceil((s + l.duration) / 60) * 60);
+  }));
+
   const hours = [];
   for (let m = from; m < to; m += 60) hours.push(m);
   const todayIso = todayISO();
@@ -509,37 +531,37 @@ function weekView() {
 
     <div class="wk" style="--slot:${SLOT_H}px">
       <div class="wk-corner"></div>
-      ${days.map((d, i) => {
-        const iso = isoDays[i];
-        const n = lessonsFor(iso).length;
-        return `<div class="wk-dh ${iso === todayIso ? 'today' : ''}">
+      ${days.map((d, i) => `
+        <div class="wk-dh ${isoDays[i] === todayIso ? 'today' : ''}">
           <span class="wk-dn">${WEEKDAYS[i]}</span>
           <span class="wk-dd">${d.getDate()}</span>
-          ${n ? `<span class="wk-dc">${n}</span>` : ''}
-        </div>`;
-      }).join('')}
+          ${columns[i].length ? `<span class="wk-dc">${columns[i].length}</span>` : ''}
+        </div>`).join('')}
 
       <div class="wk-times">
-        ${hours.map(m => `<div class="wk-t" style="height:${SLOT_H}px"><span>${hhmm(m)}</span></div>`).join('')}
+        ${hours.map(m => `<div class="wk-t ${m >= 1440 ? 'night' : ''}" style="height:${SLOT_H}px"><span>${clockLabel(m)}</span></div>`).join('')}
       </div>
 
-      ${days.map((d, i) => {
-        const iso = isoDays[i];
-        const dayL = lessonsFor(iso);
-        return `<div class="wk-col ${iso === todayIso ? 'today' : ''}" style="height:${hours.length * SLOT_H}px">
-          ${hours.map(m => `<button class="wk-slot" style="height:${SLOT_H}px" data-a="slot" data-v="${iso}" data-t="${hhmm(m)}" aria-label="Add lesson ${iso} ${hhmm(m)}"></button>`).join('')}
-          ${layoutDay(dayL, from).map(b => blockHTML(b)).join('')}
-        </div>`;
-      }).join('')}
+      ${days.map((d, i) => `
+        <div class="wk-col ${isoDays[i] === todayIso ? 'today' : ''}" style="height:${hours.length * SLOT_H}px">
+          ${hours.map(m => {
+            const past = m >= 1440;
+            const slotDate = past ? toISO(addDays(state.weekStart, i + 1)) : isoDays[i];
+            return `<button class="wk-slot ${past ? 'night' : ''}" style="height:${SLOT_H}px"
+              data-a="slot" data-v="${slotDate}" data-t="${clockLabel(m)}"
+              aria-label="Add lesson ${slotDate} ${clockLabel(m)}"></button>`;
+          }).join('')}
+          ${layoutDay(columns[i], from).map(b => blockHTML(b)).join('')}
+        </div>`).join('')}
     </div>
-    <p class="wk-hint">Click an empty slot to book. Click a lesson to edit it.</p>
+    <p class="wk-hint">08:00 through 01:00. Click an empty slot to book, or a lesson to edit it.</p>
   </div>`;
 }
 
 // Side-by-side placement for lessons that overlap in time.
-function layoutDay(lessons, from) {
-  const items = lessons
-    .map(l => ({ l, s: minutesOf(l.time), e: minutesOf(l.time) + Math.max(20, l.duration) }))
+function layoutDay(entries, from) {
+  const items = entries
+    .map(({ l, s }) => ({ l, s, e: s + Math.max(20, l.duration) }))
     .sort((a, b) => a.s - b.s || a.e - b.e);
   const out = [];
   let cluster = [], clusterEnd = -1;
@@ -570,7 +592,7 @@ function blockHTML(b) {
     style="top:${top}px;height:${h}px;left:calc(${b.col * w}% + 2px);width:calc(${w}% - 4px);
            background:${tint(c, .14)};border-left:3px solid ${c}">
     <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
-    <span class="wk-bt">${esc(l.time)}${short ? '' : `–${hhmm(b.e)}`}${l.status === 'completed' && !l.paid ? ' · unpaid' : ''}</span>
+    <span class="wk-bt">${clockLabel(b.s)}${short ? '' : `–${clockLabel(b.e)}`}${l.status === 'completed' && !l.paid ? ' · unpaid' : ''}</span>
   </button>`;
 }
 
@@ -699,7 +721,25 @@ function lessonModalHTML() {
         <span>×</span>
         <button class="btn sm ghost" data-a="add-weekly">Add</button>
       </div>
-    ` : ''}
+      <p class="fine">Or save it first, then set it to repeat indefinitely.</p>
+    ` : `
+      <label class="fl">Repeats</label>
+      ${f.seriesId ? `
+        <div class="rep on">
+          ${I.repeat}
+          <div>
+            <b>Every ${parseISO(f.date).toLocaleDateString('en-GB', { weekday: 'long' })} at ${esc(f.time)}</b>
+            <span>Ongoing — new lessons appear automatically.</span>
+          </div>
+        </div>
+        <button class="btn ghost wide" data-a="ask-stop-repeat" data-id="${f.seriesId}">Stop repeating</button>
+      ` : `
+        <button class="btn ghost wide" data-a="start-repeat" data-id="${f.id}">
+          ${I.repeat} Repeat every ${parseISO(f.date).toLocaleDateString('en-GB', { weekday: 'long' })}
+        </button>
+        <p class="fine">Keeps booking this slot every week until you stop it.</p>
+      `}
+    `}
 
     <label class="fl">Payment</label>
     ${f.viaPrepay ? `
@@ -839,7 +879,7 @@ function confirmModalHTML() {
     <p class="cmsg">${esc(confirmModal.message)}</p>
     <div class="acts">
       <button class="btn grow" data-a="cancel-confirm">Cancel</button>
-      <button class="btn ${confirmModal.type === 'settle' ? 'pri' : 'dang'} grow" data-a="do-confirm">${esc(confirmModal.verb || 'Delete')}</button>
+      <button class="btn ${confirmModal.type === 'settle' || confirmModal.type === 'stop-repeat' ? 'pri' : 'dang'} grow" data-a="do-confirm">${esc(confirmModal.verb || 'Delete')}</button>
     </div>
   </div></div>`;
 }
@@ -932,6 +972,7 @@ async function doConfirm() {
     const fresh = studentById(sid);
     if (fresh && studentModal) { studentModal = { ...fresh }; render(); }
   }
+  else if (c.type === 'stop-repeat') { lessonModal = null; await mutate('/series/' + c.id + '/stop', { method: 'POST' }); }
   else if (c.type === 'reset') { await mutate('/reset', { method: 'POST' }); }
 }
 
@@ -1047,6 +1088,22 @@ document.addEventListener('click', (e) => {
       state.filterStatus = 'all';
       state.tab = 'lessons';
       render(); break;
+    case 'start-repeat':
+      lessonModal = null;
+      mutate('/lessons/' + id + '/repeat', { method: 'POST' });
+      break;
+    case 'ask-stop-repeat': {
+      const future = state.lessons.filter(l =>
+        l.seriesId === id && l.date > todayISO() && l.status === 'scheduled' && !l.paid).length;
+      confirmModal = {
+        type: 'stop-repeat', id,
+        message: future
+          ? `Stop this weekly booking? ${future} unbooked future lesson${future === 1 ? '' : 's'} will be removed. Past and completed ones stay.`
+          : 'Stop this weekly booking? Past lessons stay as they are.',
+        verb: 'Stop repeating',
+      };
+      render(); break;
+    }
     case 'wk':
       state.weekStart = addDays(state.weekStart, 7 * Number(v));
       render(); break;
@@ -1195,6 +1252,7 @@ document.addEventListener('change', (e) => {
     state.students = data.students;
     state.lessons = data.lessons;
     state.payments = data.payments;
+    state.series = data.series || [];
   } catch (e) {
     state.error = 'Could not reach the server.';
   }
