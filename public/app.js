@@ -5,13 +5,14 @@ const SUBJECTS = ['Mathematics', 'Economics', 'Other'];
 const COLORS = ['#2F6B4F', '#8B4A2B', '#3B5A6B', '#7A5C2E', '#6B3F5C', '#4A6B3F', '#8B3A3A', '#3F5C6B'];
 const STATUS_LABELS = { scheduled: 'Scheduled', completed: 'Done', cancelled: 'Cancelled' };
 const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 // ---------- State ----------
 let state = {
   students: [],
   lessons: [],
   payments: [],
-  series: [],
+  curriculum: [],
   tab: 'overview',
   loaded: false,
   busy: false,
@@ -31,6 +32,7 @@ let lessonModal = null;
 let studentModal = null;
 let confirmModal = null;
 let prepayForm = null;
+let curForm = null;
 
 // ---------- Date helpers ----------
 function toISO(d) {
@@ -126,7 +128,7 @@ async function mutate(path, options) {
     state.students = data.students;
     state.lessons = data.lessons;
     state.payments = data.payments;
-    state.series = data.series || [];
+    state.curriculum = data.curriculum || [];
   } catch (e) {
     state.error = e.message;
   }
@@ -230,11 +232,14 @@ function render() {
     <main>${tabContent()}</main>
     ${state.tab === 'students'
       ? `<button class="fab" data-a="new-student" aria-label="Add student">${I.plus}</button>`
-      : `<button class="fab" data-a="new-lesson" aria-label="Add lesson">${I.plus}</button>`}
+      : state.tab === 'curriculum'
+        ? `<button class="fab" data-a="new-cur" aria-label="Add weekly slot">${I.plus}</button>`
+        : `<button class="fab" data-a="new-lesson" aria-label="Add lesson">${I.plus}</button>`}
     ${selBar()}
     ${nav()}
     ${lessonModal ? lessonModalHTML() : ''}
     ${studentModal ? studentModalHTML() : ''}
+    ${curForm ? curModalHTML() : ''}
     ${confirmModal ? confirmModalHTML() : ''}
   `;
 }
@@ -276,6 +281,7 @@ function nav() {
   const tabs = [
     ['overview', 'Overview', I.home],
     ['calendar', 'Calendar', I.cal],
+    ['curriculum', 'Weekly', I.repeat],
     ['lessons', 'Lessons', I.list],
     ['students', 'Students', I.users],
   ];
@@ -289,6 +295,7 @@ function tabContent() {
   if (!state.students.length && state.tab !== 'students') return emptyStart();
   if (state.tab === 'overview') return overviewView();
   if (state.tab === 'calendar') return WIDE() ? weekView() : calendarView();
+  if (state.tab === 'curriculum') return curriculumView();
   if (state.tab === 'lessons') return lessonsView();
   if (state.tab === 'students') return studentsView();
   return '';
@@ -420,7 +427,7 @@ function lessonRow(l, opts) {
             <span class="pip" style="background:${st ? st.color : '#a8a29e'}"></span>
             ${st ? esc(st.name) : 'Unknown'}
           </span>
-          <span class="row-sub">${l.seriesId ? '<span class="rep-i">' + I.repeat + '</span>' : ''}${esc(l.subject)}${st && st.grade ? ' · ' + esc(st.grade) : ''}${l.status === 'scheduled' ? '' : ' · ' + STATUS_LABELS[l.status]}</span>
+          <span class="row-sub">${l.curriculumId ? '<span class="rep-i">' + I.repeat + '</span>' : ''}${esc(l.subject)}${st && st.grade ? ' · ' + esc(st.grade) : ''}${l.status === 'scheduled' ? '' : ' · ' + STATUS_LABELS[l.status]}</span>
         </span>
       </button>
       <button class="row-pay" data-a="toggle-paid" data-id="${l.id}" title="Toggle paid">
@@ -482,6 +489,97 @@ function calendarView() {
         : '<p class="none">No lessons.</p>'}
     </div>
   </div>`;
+}
+
+// ---------- Curriculum: the generic week that repeats forever ----------
+function curriculumView() {
+  if (!state.students.length) return emptyStart();
+  const byDay = Array.from({ length: 7 }, () => []);
+  state.curriculum.forEach(c => { if (byDay[c.weekday]) byDay[c.weekday].push(c); });
+  byDay.forEach(d => d.sort((a, b) => a.time.localeCompare(b.time)));
+  const total = state.curriculum.length;
+
+  return `<div class="wrap ${WIDE() ? 'wide' : ''}">
+    <div class="cur-intro">
+      <b>Your standard week</b>
+      <span>These repeat indefinitely. Deleting a lesson in the calendar skips just that week — remove it here to stop it for good.</span>
+    </div>
+
+    ${total === 0 ? `
+      <div class="empty">
+        <span class="icn big">${I.repeat}</span>
+        <h2>No weekly slots yet</h2>
+        <p>Add the lessons you teach every week.</p>
+        <button class="btn pri" data-a="new-cur">Add a weekly slot</button>
+      </div>
+    ` : `
+      <div class="cur-grid">
+        ${byDay.map((items, wd) => `
+          <div class="cur-day">
+            <div class="cur-dh">
+              <span>${DAY_NAMES[wd]}</span>
+              <button class="ib sm" data-a="new-cur" data-v="${wd}" title="Add to ${DAY_NAMES[wd]}">${I.plus}</button>
+            </div>
+            ${items.length ? items.map(c => {
+              const st = studentById(c.studentId);
+              const col = st ? st.color : '#a8a29e';
+              return `<button class="cur-s" data-a="edit-cur" data-id="${c.id}"
+                style="background:${tint(col, .13)};border-left:3px solid ${col}">
+                <span class="cur-t">${esc(c.time)}</span>
+                <span class="cur-n">${st ? esc(st.name) : 'Unknown'}</span>
+                <span class="cur-m">${c.duration}m · ${money(c.amount)}</span>
+              </button>`;
+            }).join('') : '<p class="cur-none">—</p>'}
+          </div>`).join('')}
+      </div>
+      <p class="wk-hint">${total} slot${total === 1 ? '' : 's'} a week · ${money(state.curriculum.reduce((a, c) => a + c.amount, 0))} if all go ahead</p>
+    `}
+  </div>`;
+}
+
+function curModalHTML() {
+  const f = curForm;
+  const isNew = !f.id;
+  return `<div class="ov" data-ov="cur"><div class="sheet">
+    <div class="sheet-h">
+      <h2>${isNew ? 'New weekly slot' : 'Weekly slot'}</h2>
+      <button class="ib" data-a="close-cur">${I.x}</button>
+    </div>
+    <div class="rep on" style="margin-bottom:4px">
+      ${I.repeat}
+      <div><b>Repeats every week</b><span>Lessons appear on the calendar automatically.</span></div>
+    </div>
+
+    <label class="fl">Student</label>
+    <select data-f="curStudent">
+      ${state.students.map(st => `<option value="${st.id}" ${st.id === f.studentId ? 'selected' : ''}>${esc(st.name)}</option>`).join('')}
+    </select>
+
+    <label class="fl">Day</label>
+    <select data-f="curWeekday">
+      ${DAY_NAMES.map((d, i) => `<option value="${i}" ${i === Number(f.weekday) ? 'selected' : ''}>${d}</option>`).join('')}
+    </select>
+
+    <div class="two">
+      <div><label class="fl">Time</label><input type="time" data-f="curTime" value="${f.time}"></div>
+      <div><label class="fl">Minutes</label><input type="number" min="15" step="15" data-f="curDuration" value="${f.duration}"></div>
+    </div>
+
+    <div class="two">
+      <div><label class="fl">Subject</label>
+        <select data-f="curSubject">${SUBJECTS.map(x => `<option value="${x}" ${x === f.subject ? 'selected' : ''}>${x}</option>`).join('')}</select>
+      </div>
+      <div><label class="fl">Amount (€)</label><input type="number" min="0" step="0.5" data-f="curAmount" value="${f.amount}"></div>
+    </div>
+
+    ${isNew ? '' : '<p class="fine">Saving rebuilds upcoming lessons from this slot. Completed and paid ones are never touched.</p>'}
+
+    <div class="acts">
+      ${isNew ? '' : `<button class="btn dang-o" data-a="ask-del-cur">${I.trash}</button>`}
+      <button class="btn" data-a="close-cur">Cancel</button>
+      <button class="btn pri grow" data-a="save-cur">Save</button>
+    </div>
+  </div></div>`;
 }
 
 // ---------- Week view (wide screens) ----------
@@ -723,22 +821,17 @@ function lessonModalHTML() {
       </div>
       <p class="fine">Or save it first, then set it to repeat indefinitely.</p>
     ` : `
-      <label class="fl">Repeats</label>
-      ${f.seriesId ? `
+      ${f.curriculumId ? `
+        <label class="fl">Repeats</label>
         <div class="rep on">
           ${I.repeat}
           <div>
-            <b>Every ${parseISO(f.date).toLocaleDateString('en-GB', { weekday: 'long' })} at ${esc(f.time)}</b>
-            <span>Ongoing — new lessons appear automatically.</span>
+            <b>From your weekly curriculum</b>
+            <span>Deleting this one only skips this week. Edit the slot to change it for good.</span>
           </div>
         </div>
-        <button class="btn ghost wide" data-a="ask-stop-repeat" data-id="${f.seriesId}">Stop repeating</button>
-      ` : `
-        <button class="btn ghost wide" data-a="start-repeat" data-id="${f.id}">
-          ${I.repeat} Repeat every ${parseISO(f.date).toLocaleDateString('en-GB', { weekday: 'long' })}
-        </button>
-        <p class="fine">Keeps booking this slot every week until you stop it.</p>
-      `}
+        <button class="btn ghost wide" data-a="open-cur-from-lesson" data-id="${f.curriculumId}">Open in Curriculum</button>
+      ` : ''}
     `}
 
     <label class="fl">Payment</label>
@@ -879,7 +972,7 @@ function confirmModalHTML() {
     <p class="cmsg">${esc(confirmModal.message)}</p>
     <div class="acts">
       <button class="btn grow" data-a="cancel-confirm">Cancel</button>
-      <button class="btn ${confirmModal.type === 'settle' || confirmModal.type === 'stop-repeat' ? 'pri' : 'dang'} grow" data-a="do-confirm">${esc(confirmModal.verb || 'Delete')}</button>
+      <button class="btn ${confirmModal.type === 'settle' ? 'pri' : 'dang'} grow" data-a="do-confirm">${esc(confirmModal.verb || 'Delete')}</button>
     </div>
   </div></div>`;
 }
@@ -937,6 +1030,18 @@ function saveStudent() {
   }
 }
 
+function saveCur() {
+  const f = curForm;
+  if (!f.studentId || !f.time) return;
+  const body = JSON.stringify({
+    studentId: f.studentId, weekday: Number(f.weekday), time: f.time,
+    duration: Number(f.duration), subject: f.subject, amount: Number(f.amount),
+  });
+  const id = f.id;
+  curForm = null;
+  mutate(id ? ('/curriculum/' + id) : '/curriculum', { method: id ? 'PUT' : 'POST', body });
+}
+
 async function savePrepay() {
   const f = studentModal, p = prepayForm;
   if (!p || !Number(p.lessonsCount) || p.amount === '' || Number.isNaN(Number(p.amount))) return;
@@ -972,7 +1077,7 @@ async function doConfirm() {
     const fresh = studentById(sid);
     if (fresh && studentModal) { studentModal = { ...fresh }; render(); }
   }
-  else if (c.type === 'stop-repeat') { lessonModal = null; await mutate('/series/' + c.id + '/stop', { method: 'POST' }); }
+  else if (c.type === 'curriculum') { curForm = null; await mutate('/curriculum/' + c.id, { method: 'DELETE' }); }
   else if (c.type === 'reset') { await mutate('/reset', { method: 'POST' }); }
 }
 
@@ -982,6 +1087,7 @@ document.addEventListener('click', (e) => {
   if (ov && e.target === ov) {
     if (ov.dataset.ov === 'confirm') confirmModal = null;
     else if (ov.dataset.ov === 'lesson') lessonModal = null;
+    else if (ov.dataset.ov === 'cur') curForm = null;
     else { studentModal = null; prepayForm = null; }
     render();
     return;
@@ -1088,22 +1194,36 @@ document.addEventListener('click', (e) => {
       state.filterStatus = 'all';
       state.tab = 'lessons';
       render(); break;
-    case 'start-repeat':
-      lessonModal = null;
-      mutate('/lessons/' + id + '/repeat', { method: 'POST' });
-      break;
-    case 'ask-stop-repeat': {
-      const future = state.lessons.filter(l =>
-        l.seriesId === id && l.date > todayISO() && l.status === 'scheduled' && !l.paid).length;
-      confirmModal = {
-        type: 'stop-repeat', id,
-        message: future
-          ? `Stop this weekly booking? ${future} unbooked future lesson${future === 1 ? '' : 's'} will be removed. Past and completed ones stay.`
-          : 'Stop this weekly booking? Past lessons stay as they are.',
-        verb: 'Stop repeating',
+    case 'new-cur': {
+      const st0 = state.students[0];
+      if (!st0) { state.tab = 'students'; openNewStudent(); break; }
+      curForm = {
+        id: null, studentId: st0.id, weekday: v != null ? Number(v) : (new Date().getDay() + 6) % 7,
+        time: '15:00', duration: 60, subject: st0.subject, amount: st0.rate,
       };
       render(); break;
     }
+    case 'edit-cur': {
+      const c = state.curriculum.find(x => x.id === id);
+      if (c) { curForm = { ...c }; render(); }
+      break;
+    }
+    case 'open-cur-from-lesson': {
+      const c = state.curriculum.find(x => x.id === id);
+      lessonModal = null;
+      state.tab = 'curriculum';
+      if (c) curForm = { ...c };
+      render(); break;
+    }
+    case 'close-cur': curForm = null; render(); break;
+    case 'save-cur': saveCur(); break;
+    case 'ask-del-cur':
+      confirmModal = {
+        type: 'curriculum', id: curForm.id,
+        message: 'Remove this from your weekly curriculum? Upcoming lessons from it are cleared; past and paid ones stay.',
+        verb: 'Remove slot',
+      };
+      render(); break;
     case 'wk':
       state.weekStart = addDays(state.weekStart, 7 * Number(v));
       render(); break;
@@ -1201,6 +1321,11 @@ document.addEventListener('input', (e) => {
       return;
     }
   }
+  if (curForm) {
+    if (f === 'curTime') { curForm.time = e.target.value; return; }
+    if (f === 'curDuration') { curForm.duration = Number(e.target.value) || 0; return; }
+    if (f === 'curAmount') { curForm.amount = Number(e.target.value) || 0; return; }
+  }
   if (prepayForm) {
     // Both fields are exactly what you type. Nothing is derived, so a
     // discounted block (8 lessons for 180) records as-is.
@@ -1231,6 +1356,16 @@ document.addEventListener('change', (e) => {
     }
     render(); return;
   }
+  if (curForm) {
+    if (f === 'curStudent') {
+      curForm.studentId = e.target.value;
+      const st = studentById(e.target.value);
+      if (st) { curForm.subject = st.subject; curForm.amount = Number((st.rate * (curForm.duration / 60)).toFixed(2)); }
+      render(); return;
+    }
+    if (f === 'curWeekday') { curForm.weekday = Number(e.target.value); return; }
+    if (f === 'curSubject') { curForm.subject = e.target.value; return; }
+  }
   if (lessonModal && f === 'subject') { lessonModal.subject = e.target.value; return; }
   if (studentModal && f === 'subject') { studentModal.subject = e.target.value; return; }
 });
@@ -1252,7 +1387,7 @@ document.addEventListener('change', (e) => {
     state.students = data.students;
     state.lessons = data.lessons;
     state.payments = data.payments;
-    state.series = data.series || [];
+    state.curriculum = data.curriculum || [];
   } catch (e) {
     state.error = 'Could not reach the server.';
   }
