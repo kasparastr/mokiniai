@@ -500,41 +500,30 @@ main { flex: 1; padding-bottom: 108px; }
 .rep-i { display: inline-flex; vertical-align: -2px; margin-right: 4px; opacity: .65; }
 .rep-i svg { width: 11px; height: 11px; }
 
-/* ---------- Curriculum grid ---------- */
+/* ---------- Curriculum ---------- */
 .cur-intro {
-  display: flex; flex-direction: column; gap: 2px; margin-bottom: 16px;
+  display: flex; flex-direction: column; gap: 2px; margin-bottom: 14px;
   padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
 }
 .cur-intro b { font-size: 13.5px; }
 .cur-intro span { font-size: 12.5px; color: var(--ink-2); line-height: 1.4; }
 
-.cur-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
-@media (min-width: 860px) { .cur-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; } }
-
-.cur-day {
-  background: var(--card); border: 1px solid var(--line); border-radius: var(--r);
-  padding: 9px; display: flex; flex-direction: column; gap: 6px; min-height: 74px;
+/* The curriculum uses the same grid as the calendar. On narrow screens it
+   scrolls sideways rather than collapsing to a different layout. */
+@media (max-width: 859px) {
+  .wrap.wide .wk { display: grid; min-width: 680px; }
+  .wrap.wide .wk-h, .wrap.wide .wk-hint { display: block; }
+  .wrap.wide { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
-.cur-dh { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.cur-dh span {
-  font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--ink-3);
-}
-@media (min-width: 860px) { .cur-dh span { font-size: 10px; } }
-.cur-dh .ib { padding: 3px; color: var(--ink-3); }
-.cur-dh .ib svg { width: 14px; height: 14px; }
-
-.cur-s {
-  display: flex; flex-direction: column; gap: 1px; text-align: left;
-  padding: 7px 9px; border-radius: 5px;
-}
-.cur-s:hover { filter: brightness(.96); }
-.cur-t { font-family: var(--serif); font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.cur-n {
-  font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.cur-m { font-size: 10.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
-.cur-none { text-align: center; color: var(--line); font-size: 13px; margin: 2px 0; }
 
 /* Five nav items need slightly tighter spacing. */
 .nav-b { padding: 5px 12px; }
 @media (max-width: 400px) { .nav-b { padding: 5px 8px; } .nav-b span { font-size: 9.5px; } }
+
+/* Read-only derived value in the lesson sheet */
+.ro {
+  padding: 10px 12px; border: 1px solid var(--line-2); border-radius: var(--r-sm);
+  background: var(--paper); color: var(--ink-2); font-size: 16px;
+  font-family: var(--serif); font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.kindseg { margin-bottom: 4px; }
