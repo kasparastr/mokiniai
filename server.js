@@ -110,6 +110,10 @@ async function initDb() {
     );
   `);
   await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS curriculum_id TEXT`);
+  // Which payment paid for this lesson. Set by reconciliation, never by hand.
+  await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS covered_by TEXT`);
+  // 'prepaid' = a block bought up front, 'single' = one lesson paid for on its own.
+  await pool.query(`ALTER TABLE payments ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'prepaid'`);
   // The earlier per-lesson 'series' approach is superseded by the curriculum.
   await pool.query(`ALTER TABLE lessons DROP COLUMN IF EXISTS series_id`);
   await pool.query(`DROP TABLE IF EXISTS series CASCADE`);
@@ -187,23 +191,35 @@ async function syncCurriculum(client) {
 // ---------- Reconciliation ----------
 async function reconcileStudent(client, studentId) {
   if (!studentId) return;
-  const creditsRes = await client.query(
-    'SELECT COALESCE(SUM(lessons_count), 0) AS credits FROM payments WHERE student_id = $1',
+
+  // Payments are consumed oldest first, and each lesson remembers which
+  // payment covered it. That's what lets a lesson be worth 85/4 rather than
+  // some price typed on the lesson itself.
+  const { rows: payments } = await client.query(
+    'SELECT id, lessons_count FROM payments WHERE student_id = $1 ORDER BY date ASC, id ASC',
     [studentId]
   );
-  const credits = Number(creditsRes.rows[0].credits) || 0;
-
-  const coverable = await client.query(
+  const { rows: coverable } = await client.query(
     `SELECT id FROM lessons
      WHERE student_id = $1 AND status = 'completed' AND paid_cash = false
      ORDER BY date ASC, time ASC`,
     [studentId]
   );
-  const covered = coverable.rows.slice(0, credits).map(r => r.id);
 
-  await client.query('UPDATE lessons SET via_prepay = false WHERE student_id = $1', [studentId]);
-  if (covered.length) {
-    await client.query('UPDATE lessons SET via_prepay = true WHERE id = ANY($1::text[])', [covered]);
+  await client.query(
+    'UPDATE lessons SET via_prepay = false, covered_by = NULL WHERE student_id = $1',
+    [studentId]
+  );
+
+  let i = 0;
+  for (const p of payments) {
+    for (let k = 0; k < p.lessons_count && i < coverable.length; k++, i++) {
+      await client.query(
+        'UPDATE lessons SET via_prepay = true, covered_by = $1 WHERE id = $2',
+        [p.id, coverable[i].id]
+      );
+    }
+    if (i >= coverable.length) break;
   }
 }
 
@@ -228,7 +244,14 @@ function mapStudent(r, creditsById, usedById) {
     prepaidBalance: credits - used,
   };
 }
-function mapLesson(r) {
+function mapLesson(r, payMap) {
+  // A covered lesson is worth its share of the payment that covered it, so a
+  // discounted block prices its own lessons and nothing needs correcting.
+  let effective = Number(r.amount);
+  if (r.covered_by && payMap && payMap[r.covered_by]) {
+    const p = payMap[r.covered_by];
+    if (p.lessons_count > 0) effective = Number(p.amount) / p.lessons_count;
+  }
   return {
     id: r.id,
     studentId: r.student_id,
@@ -243,6 +266,8 @@ function mapLesson(r) {
     paid: r.paid_cash || r.via_prepay,
     notes: r.notes || '',
     curriculumId: r.curriculum_id || null,
+    coveredBy: r.covered_by || null,
+    effectiveAmount: Math.round(effective * 100) / 100,
   };
 }
 function mapPayment(r) {
@@ -252,6 +277,7 @@ function mapPayment(r) {
     date: r.date,
     lessonsCount: r.lessons_count,
     amount: Number(r.amount),
+    kind: r.kind || 'prepaid',
     notes: r.notes || '',
   };
 }
@@ -267,6 +293,9 @@ async function fullState(client) {
   const curRes = await q.query('SELECT * FROM curriculum WHERE active = true ORDER BY weekday, time');
   const creditsRes = await q.query('SELECT student_id, COALESCE(SUM(lessons_count),0) AS c FROM payments GROUP BY student_id');
   const usedRes = await q.query('SELECT student_id, COUNT(*) AS c FROM lessons WHERE via_prepay = true GROUP BY student_id');
+  const payMap = {};
+  paymentsRes.rows.forEach(r => { payMap[r.id] = r; });
+
   const creditsById = {};
   creditsRes.rows.forEach(r => { creditsById[r.student_id] = Number(r.c); });
   const usedById = {};
@@ -274,7 +303,7 @@ async function fullState(client) {
 
   return {
     students: studentsRes.rows.map(r => mapStudent(r, creditsById, usedById)),
-    lessons: lessonsRes.rows.map(mapLesson),
+    lessons: lessonsRes.rows.map(r => mapLesson(r, payMap)),
     payments: paymentsRes.rows.map(mapPayment),
     curriculum: curRes.rows.map(r => ({
       id: r.id, studentId: r.student_id, weekday: r.weekday, time: r.time,
@@ -359,12 +388,14 @@ app.delete('/api/students/:id', (req, res) => {
 // ---------- Prepayments ----------
 app.post('/api/students/:id/prepayments', (req, res) => {
   mutate(res, async (client) => {
-    const { lessonsCount, amount, date, notes } = req.body;
+    const { lessonsCount, amount, date, notes, kind } = req.body;
     const count = Number(lessonsCount);
     if (!count || count <= 0) throw new Error('Lesson count must be at least 1');
     await client.query(
-      'INSERT INTO payments (id, student_id, date, lessons_count, amount, notes) VALUES ($1,$2,$3,$4,$5,$6)',
-      [crypto.randomUUID(), req.params.id, date || new Date().toISOString().slice(0, 10), count, amount || 0, notes || '']
+      `INSERT INTO payments (id, student_id, date, lessons_count, amount, notes, kind)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [crypto.randomUUID(), req.params.id, date || isoOf(new Date()), count, amount || 0, notes || '',
+       kind === 'single' ? 'single' : 'prepaid']
     );
     return req.params.id;
   });
@@ -372,12 +403,13 @@ app.post('/api/students/:id/prepayments', (req, res) => {
 
 app.put('/api/payments/:id', (req, res) => {
   mutate(res, async (client) => {
-    const { lessonsCount, amount, date, notes } = req.body;
+    const { lessonsCount, amount, date, notes, kind } = req.body;
     const count = Number(lessonsCount);
     if (!count || count <= 0) throw new Error('Lesson count must be at least 1');
     const { rows } = await client.query(
-      'UPDATE payments SET lessons_count=$1, amount=$2, date=$3, notes=$4 WHERE id=$5 RETURNING student_id',
-      [count, amount || 0, date, notes || '', req.params.id]
+      `UPDATE payments SET lessons_count=$1, amount=$2, date=$3, notes=$4, kind=$5
+       WHERE id=$6 RETURNING student_id`,
+      [count, amount || 0, date, notes || '', kind === 'single' ? 'single' : 'prepaid', req.params.id]
     );
     if (!rows[0]) throw new Error('Payment not found');
     return rows[0].student_id;
@@ -397,11 +429,18 @@ app.post('/api/lessons', (req, res) => {
     const { studentId, dates, date, time, duration, subject, amount, status, paidCash, notes } = req.body;
     const list = (Array.isArray(dates) && dates.length) ? dates : [date];
     if (!studentId || !list.length || !time) throw new Error('Missing fields');
+    // Fall back to the student's standard rate; a covering payment overrides
+    // this later anyway.
+    let price = amount;
+    if (price == null || price === '') {
+      const st = await client.query('SELECT rate FROM students WHERE id=$1', [studentId]);
+      price = st.rows[0] ? Number(st.rows[0].rate) * ((Number(duration) || 60) / 60) : 0;
+    }
     for (const d of list) {
       await client.query(
         `INSERT INTO lessons (id, student_id, date, time, duration, subject, amount, status, paid_cash, via_prepay, notes)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,false,$10)`,
-        [crypto.randomUUID(), studentId, d, time, duration, subject, amount, status, !!paidCash, notes || '']
+        [crypto.randomUUID(), studentId, d, time, duration, subject, price, status, !!paidCash, notes || '']
       );
     }
     return studentId;
