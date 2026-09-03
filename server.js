@@ -87,9 +87,10 @@ async function initDb() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS series (
+    CREATE TABLE IF NOT EXISTS curriculum (
       id TEXT PRIMARY KEY,
       student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      weekday INTEGER NOT NULL,
       time TEXT NOT NULL,
       duration INTEGER NOT NULL,
       subject TEXT NOT NULL,
@@ -98,7 +99,20 @@ async function initDb() {
       active BOOLEAN NOT NULL DEFAULT true
     );
   `);
-  await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS series_id TEXT`);
+  // A skip is one week of one curriculum slot, deleted from the calendar.
+  // It stops that single occurrence coming back, while the slot itself keeps
+  // generating every other week.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS curriculum_skips (
+      curriculum_id TEXT NOT NULL REFERENCES curriculum(id) ON DELETE CASCADE,
+      date TEXT NOT NULL,
+      PRIMARY KEY (curriculum_id, date)
+    );
+  `);
+  await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS curriculum_id TEXT`);
+  // The earlier per-lesson 'series' approach is superseded by the curriculum.
+  await pool.query(`ALTER TABLE lessons DROP COLUMN IF EXISTS series_id`);
+  await pool.query(`DROP TABLE IF EXISTS series CASCADE`);
 
   // Migrations for databases created by earlier versions.
   await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS grade TEXT DEFAULT ''`);
@@ -115,10 +129,10 @@ async function initDb() {
   // prepaid_balance is no longer used; the balance is derived. Harmless if present.
 }
 
-// ---------- Weekly series ----------
-// Rather than modelling infinite recurrence, an active series keeps a rolling
-// window of real lesson rows generated ahead. Every occurrence stays an
-// ordinary, individually editable lesson.
+// ---------- Curriculum ----------
+// The curriculum is a generic week. Rather than modelling infinite recurrence,
+// each slot keeps a rolling window of real lesson rows generated ahead, so
+// every occurrence stays an ordinary, individually editable lesson.
 const HORIZON_DAYS = 70;
 
 function isoOf(d) {
@@ -129,33 +143,43 @@ function fromIso(iso) {
   return new Date(y, m - 1, d);
 }
 
-async function extendSeries(client) {
-  const horizon = new Date();
+// Materialise curriculum slots into real lessons across a rolling window.
+// Existing lessons and skipped weeks are left untouched, so this is safe to
+// run on every request.
+async function syncCurriculum(client) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const todayIso = isoOf(today);
+  const horizon = new Date(today);
   horizon.setDate(horizon.getDate() + HORIZON_DAYS);
-  const hIso = isoOf(horizon);
 
-  const { rows: all } = await client.query('SELECT * FROM series WHERE active = true');
-  for (const s of all) {
-    const last = await client.query('SELECT MAX(date) AS m FROM lessons WHERE series_id = $1', [s.id]);
-    const cursorIso = last.rows[0].m || s.start_date;
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const d = fromIso(cursorIso);
-    // Never invent lessons in the past: if the series' last occurrence is
-    // behind us, jump straight to the next same-weekday slot from today.
-    if (d < today) {
-      const weeks = Math.ceil((today - d) / (7 * 86400000));
-      d.setDate(d.getDate() + weeks * 7);
-      d.setDate(d.getDate() - 7); // step back one; the loop advances first
-    }
-    for (let guard = 0; guard < 60; guard++) {
-      d.setDate(d.getDate() + 7);
+  const { rows: items } = await client.query('SELECT * FROM curriculum WHERE active = true');
+  if (!items.length) return;
+
+  const { rows: existing } = await client.query(
+    'SELECT curriculum_id, date FROM lessons WHERE curriculum_id IS NOT NULL AND date >= $1',
+    [todayIso]
+  );
+  const have = new Set(existing.map(r => r.curriculum_id + '|' + r.date));
+
+  const { rows: skipRows } = await client.query('SELECT curriculum_id, date FROM curriculum_skips');
+  const skipped = new Set(skipRows.map(r => r.curriculum_id + '|' + r.date));
+
+  for (const c of items) {
+    const d = new Date(today);
+    // Advance to the first matching weekday on or after today.
+    const cur = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() + ((c.weekday - cur + 7) % 7));
+    while (d <= horizon) {
       const iso = isoOf(d);
-      if (iso > hIso) break;
-      await client.query(
-        `INSERT INTO lessons (id, student_id, date, time, duration, subject, amount, status, paid_cash, via_prepay, notes, series_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,'scheduled',false,false,'',$8)`,
-        [crypto.randomUUID(), s.student_id, iso, s.time, s.duration, s.subject, s.amount, s.id]
-      );
+      const key = c.id + '|' + iso;
+      if (iso >= c.start_date && !have.has(key) && !skipped.has(key)) {
+        await client.query(
+          `INSERT INTO lessons (id, student_id, date, time, duration, subject, amount, status, paid_cash, via_prepay, notes, curriculum_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,'scheduled',false,false,'',$8)`,
+          [crypto.randomUUID(), c.student_id, iso, c.time, c.duration, c.subject, c.amount, c.id]
+        );
+      }
+      d.setDate(d.getDate() + 7);
     }
   }
 }
@@ -218,7 +242,7 @@ function mapLesson(r) {
     viaPrepay: r.via_prepay,
     paid: r.paid_cash || r.via_prepay,
     notes: r.notes || '',
-    seriesId: r.series_id || null,
+    curriculumId: r.curriculum_id || null,
   };
 }
 function mapPayment(r) {
@@ -240,7 +264,7 @@ async function fullState(client) {
   const studentsRes = await q.query('SELECT * FROM students ORDER BY name');
   const lessonsRes = await q.query('SELECT * FROM lessons ORDER BY date, time');
   const paymentsRes = await q.query('SELECT * FROM payments ORDER BY date DESC');
-  const seriesRes = await q.query('SELECT * FROM series');
+  const curRes = await q.query('SELECT * FROM curriculum WHERE active = true ORDER BY weekday, time');
   const creditsRes = await q.query('SELECT student_id, COALESCE(SUM(lessons_count),0) AS c FROM payments GROUP BY student_id');
   const usedRes = await q.query('SELECT student_id, COUNT(*) AS c FROM lessons WHERE via_prepay = true GROUP BY student_id');
   const creditsById = {};
@@ -252,9 +276,9 @@ async function fullState(client) {
     students: studentsRes.rows.map(r => mapStudent(r, creditsById, usedById)),
     lessons: lessonsRes.rows.map(mapLesson),
     payments: paymentsRes.rows.map(mapPayment),
-    series: seriesRes.rows.map(r => ({
-      id: r.id, studentId: r.student_id, time: r.time, duration: r.duration,
-      subject: r.subject, amount: Number(r.amount), startDate: r.start_date, active: r.active,
+    curriculum: curRes.rows.map(r => ({
+      id: r.id, studentId: r.student_id, weekday: r.weekday, time: r.time,
+      duration: r.duration, subject: r.subject, amount: Number(r.amount), startDate: r.start_date,
     })),
   };
 }
@@ -266,7 +290,7 @@ async function mutate(res, fn) {
   try {
     await client.query('BEGIN');
     const studentId = await fn(client);
-    await extendSeries(client);
+    await syncCurriculum(client);
     if (studentId) await reconcileStudent(client, studentId);
     else await reconcileAll(client);
     const state = await fullState(client);
@@ -283,11 +307,11 @@ async function mutate(res, fn) {
 
 // ---------- Read ----------
 app.get('/api/state', async (req, res) => {
-  // Reading also tops the rolling window up, so an open series never runs dry.
+  // Reading also tops the rolling window up, so the curriculum never runs dry.
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await extendSeries(client);
+    await syncCurriculum(client);
     const state = await fullState(client);
     await client.query('COMMIT');
     res.json(state);
@@ -441,49 +465,80 @@ app.post('/api/lessons/bulk-paid', (req, res) => {
   });
 });
 
+// Deleting a lesson that came from the curriculum removes only that week.
+// The slot keeps generating; only deleting it in Curriculum stops it.
 app.delete('/api/lessons/:id', (req, res) => {
   mutate(res, async (client) => {
-    const { rows } = await client.query('DELETE FROM lessons WHERE id=$1 RETURNING student_id', [req.params.id]);
-    return rows[0] ? rows[0].student_id : null;
-  });
-});
-
-// Turn a single lesson into an ongoing weekly booking.
-app.post('/api/lessons/:id/repeat', (req, res) => {
-  mutate(res, async (client) => {
-    const { rows } = await client.query('SELECT * FROM lessons WHERE id=$1', [req.params.id]);
-    if (!rows[0]) throw new Error('Lesson not found');
-    const l = rows[0];
-    if (l.series_id) throw new Error('This lesson already repeats');
-    const sid = crypto.randomUUID();
-    await client.query(
-      `INSERT INTO series (id, student_id, time, duration, subject, amount, start_date, active)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true)`,
-      [sid, l.student_id, l.time, l.duration, l.subject, l.amount, l.date]
+    const { rows } = await client.query(
+      'DELETE FROM lessons WHERE id=$1 RETURNING student_id, curriculum_id, date',
+      [req.params.id]
     );
-    await client.query('UPDATE lessons SET series_id=$1 WHERE id=$2', [sid, req.params.id]);
-    return l.student_id;
-  });
-});
-
-// Stop an ongoing booking. Past and completed lessons are left alone; only
-// untouched future occurrences are cleared away.
-app.post('/api/series/:id/stop', (req, res) => {
-  mutate(res, async (client) => {
-    const { rows } = await client.query('SELECT * FROM series WHERE id=$1', [req.params.id]);
-    if (!rows[0]) throw new Error('Series not found');
-    const today = isoOf(new Date());
-    await client.query('UPDATE series SET active=false WHERE id=$1', [req.params.id]);
-    await client.query(
-      `DELETE FROM lessons
-       WHERE series_id=$1 AND date > $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
-      [req.params.id, today]
-    );
+    if (!rows[0]) return null;
+    if (rows[0].curriculum_id) {
+      await client.query(
+        'INSERT INTO curriculum_skips (curriculum_id, date) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+        [rows[0].curriculum_id, rows[0].date]
+      );
+    }
     return rows[0].student_id;
   });
 });
 
-// Bulk: mark every past scheduled lesson as completed.
+// ---------- Curriculum ----------
+app.post('/api/curriculum', (req, res) => {
+  mutate(res, async (client) => {
+    const { studentId, weekday, time, duration, subject, amount, startDate } = req.body;
+    if (!studentId || weekday == null || !time) throw new Error('Missing fields');
+    await client.query(
+      `INSERT INTO curriculum (id, student_id, weekday, time, duration, subject, amount, start_date, active)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true)`,
+      [crypto.randomUUID(), studentId, Number(weekday), time, duration, subject, amount,
+       startDate || isoOf(new Date())]
+    );
+    return studentId;
+  });
+});
+
+app.put('/api/curriculum/:id', (req, res) => {
+  mutate(res, async (client) => {
+    const { studentId, weekday, time, duration, subject, amount } = req.body;
+    const prev = await client.query('SELECT * FROM curriculum WHERE id=$1', [req.params.id]);
+    if (!prev.rows[0]) throw new Error('Not found');
+    await client.query(
+      `UPDATE curriculum SET student_id=$1, weekday=$2, time=$3, duration=$4, subject=$5, amount=$6 WHERE id=$7`,
+      [studentId, Number(weekday), time, duration, subject, amount, req.params.id]
+    );
+    // Future generated lessons are rebuilt from the new definition; anything
+    // already completed or paid is left exactly as it is.
+    const today = isoOf(new Date());
+    await client.query(
+      `DELETE FROM lessons
+       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+      [req.params.id, today]
+    );
+    await client.query('DELETE FROM curriculum_skips WHERE curriculum_id=$1 AND date >= $2', [req.params.id, today]);
+    return studentId;
+  });
+});
+
+// Removing a slot from the curriculum is what actually stops the recurrence.
+app.delete('/api/curriculum/:id', (req, res) => {
+  mutate(res, async (client) => {
+    const prev = await client.query('SELECT student_id FROM curriculum WHERE id=$1', [req.params.id]);
+    const today = isoOf(new Date());
+    await client.query(
+      `DELETE FROM lessons
+       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+      [req.params.id, today]
+    );
+    // Past lessons stay, but lose their link so nothing dangles.
+    await client.query('UPDATE lessons SET curriculum_id=NULL WHERE curriculum_id=$1', [req.params.id]);
+    await client.query('DELETE FROM curriculum WHERE id=$1', [req.params.id]);
+    return prev.rows[0] ? prev.rows[0].student_id : null;
+  });
+});
+
+// Bulk: mark every past scheduled lesson as completed.// Bulk: mark every past scheduled lesson as completed.
 app.post('/api/lessons/complete-past', (req, res) => {
   mutate(res, async (client) => {
     const today = new Date().toISOString().slice(0, 10);
@@ -494,7 +549,7 @@ app.post('/api/lessons/complete-past', (req, res) => {
 
 app.post('/api/reset', (req, res) => {
   mutate(res, async (client) => {
-    await client.query('TRUNCATE TABLE lessons, payments, series, students CASCADE');
+    await client.query('TRUNCATE TABLE lessons, payments, curriculum_skips, curriculum, students CASCADE');
     return null;
   });
 });
