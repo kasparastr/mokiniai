@@ -109,6 +109,9 @@ function esc(s) {
   return d.innerHTML;
 }
 function money(n) { return '€' + Number(n || 0).toFixed(2); }
+// What a lesson is actually worth: its share of the payment that covered it,
+// or the standard price if nothing has covered it yet.
+function value(l) { return Number(l.effectiveAmount != null ? l.effectiveAmount : l.amount) || 0; }
 
 // ---------- API ----------
 async function call(path, options) {
@@ -155,10 +158,10 @@ function monthStats() {
   state.lessons.forEach(l => {
     const inMonth = l.date.startsWith(ym);
     // Earned = work delivered this month, however it was paid for.
-    if (l.status === 'completed' && inMonth) { earned += l.amount; done += 1; }
+    if (l.status === 'completed' && inMonth) { earned += value(l); done += 1; }
     // Collected = cash that actually landed against a lesson this month.
-    if (l.paidCash && inMonth) collected += l.amount;
-    if (l.status === 'completed' && !l.paid) owed += l.amount;
+    if (l.paidCash && inMonth) collected += value(l);
+    if (l.status === 'completed' && !l.paid) owed += value(l);
     if (l.status === 'scheduled' && l.date >= today) upcoming += 1;
   });
   // Prepayment money counts as collected in the month it was received.
@@ -173,7 +176,7 @@ function owedByStudent() {
   unpaidLessons().forEach(l => {
     if (!map[l.studentId]) map[l.studentId] = { student: studentById(l.studentId), lessons: [], total: 0 };
     map[l.studentId].lessons.push(l);
-    map[l.studentId].total += l.amount;
+    map[l.studentId].total += value(l);
   });
   return Object.values(map).filter(g => g.student).sort((a, b) => b.total - a.total);
 }
@@ -181,7 +184,7 @@ function owedByStudent() {
 function owedFor(studentId) {
   return state.lessons
     .filter(l => l.studentId === studentId && l.status === 'completed' && !l.paid)
-    .reduce((a, l) => a + l.amount, 0);
+    .reduce((a, l) => a + value(l), 0);
 }
 
 function unpaidLessons() {
@@ -268,7 +271,7 @@ function header() {
 function selBar() {
   if (!state.selecting) return '';
   const ids = Object.keys(state.selected).filter(k => state.selected[k]);
-  const total = ids.reduce((a, id) => { const l = lessonById(id); return a + (l ? l.amount : 0); }, 0);
+  const total = ids.reduce((a, id) => { const l = lessonById(id); return a + (l ? value(l) : 0); }, 0);
   return `<div class="selbar">
     <div class="selbar-i"><b>${ids.length} selected</b>${ids.length ? `<span>${money(total)}</span>` : ''}</div>
     <button class="btn sm" data-a="sel-cancel">Cancel</button>
@@ -411,7 +414,7 @@ function lessonRow(l, opts) {
             <span class="row-name"><span class="pip" style="background:${st ? st.color : '#a8a29e'}"></span>${st ? esc(st.name) : 'Unknown'}</span>
             <span class="row-sub">${esc(l.subject)}${l.status === 'scheduled' ? '' : ' · ' + STATUS_LABELS[l.status]}</span>
           </span>
-          <span class="row-amt sel-amt">${money(l.amount)}</span>
+          <span class="row-amt sel-amt">${money(value(l))}</span>
         </button>
       </div>`;
   }
@@ -431,7 +434,7 @@ function lessonRow(l, opts) {
         </span>
       </button>
       <button class="row-pay" data-a="toggle-paid" data-id="${l.id}" title="Toggle paid">
-        <span class="row-amt">${money(l.amount)}</span>
+        <span class="row-amt">${money(value(l))}</span>
         ${payChip(l)}
       </button>
     </div>`;
@@ -494,47 +497,69 @@ function calendarView() {
 // ---------- Curriculum: the generic week that repeats forever ----------
 function curriculumView() {
   if (!state.students.length) return emptyStart();
+
   const byDay = Array.from({ length: 7 }, () => []);
   state.curriculum.forEach(c => { if (byDay[c.weekday]) byDay[c.weekday].push(c); });
-  byDay.forEach(d => d.sort((a, b) => a.time.localeCompare(b.time)));
+
+  // Same time grid as the calendar, just without dates.
+  let from = DEFAULT_START, to = DEFAULT_END;
+  state.curriculum.forEach(c => {
+    const st = minutesOf(c.time);
+    const s0 = st < DAY_BREAK ? st + 1440 : st;
+    from = Math.min(from, Math.floor(s0 / 60) * 60);
+    to = Math.max(to, Math.ceil((s0 + c.duration) / 60) * 60);
+  });
+  const hours = [];
+  for (let m = from; m < to; m += 60) hours.push(m);
   const total = state.curriculum.length;
 
-  return `<div class="wrap ${WIDE() ? 'wide' : ''}">
+  return `<div class="wrap wide">
     <div class="cur-intro">
       <b>Your standard week</b>
       <span>These repeat indefinitely. Deleting a lesson in the calendar skips just that week — remove it here to stop it for good.</span>
     </div>
 
-    ${total === 0 ? `
-      <div class="empty">
-        <span class="icn big">${I.repeat}</span>
-        <h2>No weekly slots yet</h2>
-        <p>Add the lessons you teach every week.</p>
-        <button class="btn pri" data-a="new-cur">Add a weekly slot</button>
+    <div class="wk" style="--slot:${SLOT_H}px">
+      <div class="wk-corner"></div>
+      ${DAY_NAMES.map((d, i) => `
+        <div class="wk-dh">
+          <span class="wk-dn">${WEEKDAYS[i]}</span>
+          ${byDay[i].length ? `<span class="wk-dc">${byDay[i].length}</span>` : ''}
+        </div>`).join('')}
+
+      <div class="wk-times">
+        ${hours.map(m => `<div class="wk-t ${m >= 1440 ? 'night' : ''}" style="height:${SLOT_H}px"><span>${clockLabel(m)}</span></div>`).join('')}
       </div>
-    ` : `
-      <div class="cur-grid">
-        ${byDay.map((items, wd) => `
-          <div class="cur-day">
-            <div class="cur-dh">
-              <span>${DAY_NAMES[wd]}</span>
-              <button class="ib sm" data-a="new-cur" data-v="${wd}" title="Add to ${DAY_NAMES[wd]}">${I.plus}</button>
-            </div>
-            ${items.length ? items.map(c => {
-              const st = studentById(c.studentId);
-              const col = st ? st.color : '#a8a29e';
-              return `<button class="cur-s" data-a="edit-cur" data-id="${c.id}"
-                style="background:${tint(col, .13)};border-left:3px solid ${col}">
-                <span class="cur-t">${esc(c.time)}</span>
-                <span class="cur-n">${st ? esc(st.name) : 'Unknown'}</span>
-                <span class="cur-m">${c.duration}m · ${money(c.amount)}</span>
-              </button>`;
-            }).join('') : '<p class="cur-none">—</p>'}
-          </div>`).join('')}
-      </div>
-      <p class="wk-hint">${total} slot${total === 1 ? '' : 's'} a week · ${money(state.curriculum.reduce((a, c) => a + c.amount, 0))} if all go ahead</p>
-    `}
+
+      ${DAY_NAMES.map((d, i) => `
+        <div class="wk-col" style="height:${hours.length * SLOT_H}px">
+          ${hours.map(m => `<button class="wk-slot ${m >= 1440 ? 'night' : ''}" style="height:${SLOT_H}px"
+              data-a="new-cur" data-v="${i}" data-t="${clockLabel(m)}"
+              aria-label="Add ${DAY_NAMES[i]} ${clockLabel(m)}"></button>`).join('')}
+          ${layoutDay(byDay[i].map(c => {
+            const st = minutesOf(c.time);
+            return { l: { ...c, id: c.id, studentId: c.studentId, time: c.time, duration: c.duration, status: 'scheduled', paid: true }, s: st < DAY_BREAK ? st + 1440 : st };
+          }), from).map(b => curBlockHTML(b)).join('')}
+        </div>`).join('')}
+    </div>
+    <p class="wk-hint">${total} slot${total === 1 ? '' : 's'} a week${total ? ' · ' + money(state.curriculum.reduce((a, c) => a + c.amount, 0)) + ' if all go ahead' : ''} · click a free slot to add one</p>
   </div>`;
+}
+
+function curBlockHTML(b) {
+  const c = b.l;
+  const st = studentById(c.studentId);
+  const col = st ? st.color : '#8a857e';
+  const top = ((b.s - b.from) / 60) * SLOT_H;
+  const h = Math.max(26, ((b.e - b.s) / 60) * SLOT_H - 3);
+  const w = 100 / b.cols;
+  const short = h < 42;
+  return `<button class="wk-b ${short ? 'tiny' : ''}" data-a="edit-cur" data-id="${c.id}"
+    style="top:${top}px;height:${h}px;left:calc(${b.col * w}% + 2px);width:calc(${w}% - 4px);
+           background:${tint(col, .16)};border-left:3px solid ${col}">
+    <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
+    <span class="wk-bt">${clockLabel(b.s)}${short ? '' : `–${clockLabel(b.e)}`}</span>
+  </button>`;
 }
 
 function curModalHTML() {
@@ -744,7 +769,7 @@ function studentsView() {
     <div class="rows">${state.students.map(s => {
       const mine = state.lessons.filter(l => l.studentId === s.id);
       const done = mine.filter(l => l.status === 'completed').length;
-      const owed = mine.filter(l => l.status === 'completed' && !l.paid).reduce((a, l) => a + l.amount, 0);
+      const owed = mine.filter(l => l.status === 'completed' && !l.paid).reduce((a, l) => a + value(l), 0);
       return `
         <button class="scard" data-a="edit-student" data-id="${s.id}">
           <span class="av" style="background:${s.color}">${esc(s.name.trim().charAt(0).toUpperCase())}</span>
@@ -791,8 +816,13 @@ function lessonModalHTML() {
 
     <div class="two">
       <div><label class="fl">Minutes</label><input type="number" min="15" step="15" data-f="duration" value="${f.duration}"></div>
-      <div><label class="fl">Amount (€)</label><input type="number" min="0" step="0.5" data-f="amount" value="${f.amount}"></div>
+      <div><label class="fl">Worth</label>
+        <div class="ro">${money(f.viaPrepay && f.effectiveAmount != null ? f.effectiveAmount : f.amount)}</div>
+      </div>
     </div>
+    <p class="fine">${f.viaPrepay
+      ? 'Priced from the payment covering it.'
+      : 'Standard rate. Record a prepaid block or single payment to price it from what was actually paid.'}</p>
 
     <label class="fl">Subject</label>
     <select data-f="subject">
@@ -910,12 +940,22 @@ function studentModalHTML() {
 
         ${prepayForm ? `
           <div class="prepay-form">
-            <div class="prepay-ft">${prepayForm.id ? 'Edit payment' : 'New prepayment'}</div>
-            <div class="two">
-              <div><label class="fl">Lessons</label><input type="number" min="1" inputmode="numeric" placeholder="8" data-f="ppCount" value="${prepayForm.lessonsCount}"></div>
-              <div><label class="fl">Total paid (€)</label><input type="number" min="0" step="0.01" inputmode="decimal" placeholder="180" data-f="ppAmount" value="${prepayForm.amount}"></div>
+            <div class="prepay-ft">${prepayForm.id ? 'Edit payment' : 'Record a payment'}</div>
+            <div class="seg kindseg">
+              <button class="seg-b ${prepayForm.kind === 'prepaid' ? 'on completed' : ''}" data-a="pp-kind" data-v="prepaid">Prepaid block</button>
+              <button class="seg-b ${prepayForm.kind === 'single' ? 'on completed' : ''}" data-a="pp-kind" data-v="single">Single lesson</button>
             </div>
-            <div class="perlesson" id="perLesson">${perLessonText(prepayForm)}</div>
+            ${prepayForm.kind === 'single' ? `
+              <label class="fl">Amount paid (€)</label>
+              <input type="number" min="0" step="0.01" inputmode="decimal" placeholder="25" data-f="ppAmount" value="${prepayForm.amount}">
+              <div class="perlesson" id="perLesson">${perLessonText(prepayForm)}</div>
+            ` : `
+              <div class="two">
+                <div><label class="fl">Lessons</label><input type="number" min="1" inputmode="numeric" placeholder="4" data-f="ppCount" value="${prepayForm.lessonsCount}"></div>
+                <div><label class="fl">Total paid (€)</label><input type="number" min="0" step="0.01" inputmode="decimal" placeholder="85" data-f="ppAmount" value="${prepayForm.amount}"></div>
+              </div>
+              <div class="perlesson" id="perLesson">${perLessonText(prepayForm)}</div>
+            `}
             <label class="fl">Date received</label>
             <input type="date" data-f="ppDate" value="${prepayForm.date}">
             <div class="acts">
@@ -928,7 +968,7 @@ function studentModalHTML() {
           <div class="phist-r">
             <button class="phist-m" data-a="edit-prepay" data-id="${p.id}">
               <span>${fmtDay(p.date)}</span>
-              <span class="phist-c">${p.lessonsCount} lesson${p.lessonsCount === 1 ? '' : 's'} · ${money(p.amount / p.lessonsCount)} each</span>
+              <span class="phist-c">${p.kind === 'single' ? 'Single lesson' : `${p.lessonsCount} lessons · ${money(p.amount / p.lessonsCount)} each`}</span>
             </button>
             <b>${money(p.amount)}</b>
             <button class="ib sm" data-a="ask-del-payment" data-id="${p.id}">${I.trash}</button>
@@ -938,7 +978,7 @@ function studentModalHTML() {
     ${isNew ? '' : (() => {
       const owed = state.lessons.filter(l => l.studentId === f.id && l.status === 'completed' && !l.paid);
       if (!owed.length) return '';
-      const sum = owed.reduce((a, l) => a + l.amount, 0);
+      const sum = owed.reduce((a, l) => a + value(l), 0);
       return `<button class="btn wide pri settle-btn" data-a="ask-settle" data-id="${f.id}">
         Mark ${owed.length} unpaid lesson${owed.length === 1 ? '' : 's'} paid · ${money(sum)}
       </button>`;
@@ -953,9 +993,14 @@ function studentModalHTML() {
 }
 
 function perLessonText(p) {
-  const n = Number(p.lessonsCount) || 0;
+  const n = p.kind === 'single' ? 1 : (Number(p.lessonsCount) || 0);
   const amt = Number(p.amount);
-  if (!n || !p.amount || Number.isNaN(amt)) return '<span class="pl-idle">Enter both to see the per-lesson value.</span>';
+  if (!n || p.amount === '' || Number.isNaN(amt)) {
+    return `<span class="pl-idle">${p.kind === 'single' ? 'Enter what was paid.' : 'Enter both to see the per-lesson value.'}</span>`;
+  }
+  if (p.kind === 'single') {
+    return `Covers <b>1 lesson</b> at ${money(amt)}. This is what that lesson will be worth.`;
+  }
   const each = amt / n;
   const rate = studentModal ? Number(studentModal.rate) : 0;
   let tag = '';
@@ -964,7 +1009,7 @@ function perLessonText(p) {
     if (diff > 0.005) tag = ` <span class="pl-tag">${money(diff)} off the ${money(rate)} rate</span>`;
     else if (diff < -0.005) tag = ` <span class="pl-tag">${money(-diff)} above the ${money(rate)} rate</span>`;
   }
-  return `<b>${money(each)}</b> per lesson${tag}`;
+  return `<b>${money(each)}</b> per lesson${tag} — that's what each covered lesson is worth.`;
 }
 
 function confirmModalHTML() {
@@ -1044,9 +1089,11 @@ function saveCur() {
 
 async function savePrepay() {
   const f = studentModal, p = prepayForm;
-  if (!p || !Number(p.lessonsCount) || p.amount === '' || Number.isNaN(Number(p.amount))) return;
+  const okCount = p.kind === 'single' ? true : Number(p.lessonsCount) > 0;
+  if (!p || !okCount || p.amount === '' || Number.isNaN(Number(p.amount))) return;
   const id = f.id;
-  const body = JSON.stringify({ lessonsCount: Number(p.lessonsCount), amount: Number(p.amount), date: p.date });
+  const count = p.kind === 'single' ? 1 : Number(p.lessonsCount);
+  const body = JSON.stringify({ lessonsCount: count, amount: Number(p.amount), date: p.date, kind: p.kind });
   const isEdit = !!p.id;
   prepayForm = null;
   await mutate(isEdit ? ('/payments/' + p.id) : ('/students/' + id + '/prepayments'), {
@@ -1161,7 +1208,12 @@ document.addEventListener('click', (e) => {
     case 'save-student': saveStudent(); break;
     case 'close-student': studentModal = null; prepayForm = null; render(); break;
     case 'open-prepay':
-      prepayForm = { id: null, lessonsCount: '', amount: '', date: todayISO() };
+      prepayForm = { id: null, kind: 'prepaid', lessonsCount: '', amount: '', date: todayISO() };
+      render(); break;
+    case 'pp-kind':
+      prepayForm.kind = v;
+      if (v === 'single') prepayForm.lessonsCount = 1;
+      else if (prepayForm.lessonsCount === 1) prepayForm.lessonsCount = '';
       render(); break;
     case 'cancel-prepay': prepayForm = null; render(); break;
     case 'save-prepay': savePrepay(); break;
@@ -1180,7 +1232,7 @@ document.addEventListener('click', (e) => {
     case 'settle': {
       const st = studentById(id);
       const owed = state.lessons.filter(l => l.studentId === id && l.status === 'completed' && !l.paid);
-      const sum = owed.reduce((x, l) => x + l.amount, 0);
+      const sum = owed.reduce((x, l) => x + value(l), 0);
       confirmModal = {
         type: 'settle', id,
         message: `Mark all ${owed.length} unpaid lesson${owed.length === 1 ? '' : 's'} for ${st ? st.name : 'this student'} as paid? That's ${money(sum)}.`,
@@ -1198,8 +1250,9 @@ document.addEventListener('click', (e) => {
       const st0 = state.students[0];
       if (!st0) { state.tab = 'students'; openNewStudent(); break; }
       curForm = {
-        id: null, studentId: st0.id, weekday: v != null ? Number(v) : (new Date().getDay() + 6) % 7,
-        time: '15:00', duration: 60, subject: st0.subject, amount: st0.rate,
+        id: null, studentId: st0.id,
+        weekday: v != null && v !== '' ? Number(v) : (new Date().getDay() + 6) % 7,
+        time: el.dataset.t || '15:00', duration: 60, subject: st0.subject, amount: st0.rate,
       };
       render(); break;
     }
@@ -1263,7 +1316,7 @@ document.addEventListener('click', (e) => {
     case 'edit-prepay': {
       const pay = state.payments.find(x => x.id === id);
       if (pay) {
-        prepayForm = { id: pay.id, lessonsCount: pay.lessonsCount, amount: pay.amount, date: pay.date };
+        prepayForm = { id: pay.id, kind: pay.kind || 'prepaid', lessonsCount: pay.lessonsCount, amount: pay.amount, date: pay.date };
         render();
       }
       break;
@@ -1271,7 +1324,7 @@ document.addEventListener('click', (e) => {
     case 'ask-settle': {
       const st = studentById(id);
       const owed = state.lessons.filter(l => l.studentId === id && l.status === 'completed' && !l.paid);
-      const sum = owed.reduce((x, l) => x + l.amount, 0);
+      const sum = owed.reduce((x, l) => x + value(l), 0);
       confirmModal = {
         type: 'settle', id,
         message: `Mark all ${owed.length} unpaid lesson${owed.length === 1 ? '' : 's'} for ${st ? st.name : 'this student'} as paid? That's ${money(sum)}.`,
