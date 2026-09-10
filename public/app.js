@@ -464,15 +464,17 @@ function revenueSection() {
       ${months.map(m => {
         const solid = mode === 'earned' ? m.earned : m.collected;
         const proj = (mode === 'earned' && m.isCurrent) ? m.scheduled : 0;
-        const hS = (solid / peak) * 100;
-        const hP = (proj / peak) * 100;
+        // A month with no money draws no bar at all — a floor height here
+        // renders as a stray green line across empty months.
+        const hS = solid > 0 ? Math.max(1.5, (solid / peak) * 100) : 0;
+        const hP = proj > 0 ? Math.max(1.5, (proj / peak) * 100) : 0;
         const tip = mode === 'earned'
           ? `${m.label}: ${money(m.earned)} taught${proj ? `, ${money(proj)} still booked` : ''}`
           : `${m.label}: ${money(m.collected)} received`;
         return `<div class="bcol" title="${tip}">
           <div class="bwrap">
             ${hP > 0 ? `<div class="bar proj" style="height:${hP.toFixed(1)}%"></div>` : ''}
-            <div class="bar ${m.isCurrent ? 'now' : ''}" style="height:${hS.toFixed(1)}%"></div>
+            ${hS > 0 ? `<div class="bar ${m.isCurrent ? 'now' : ''}" style="height:${hS.toFixed(1)}%"></div>` : ''}
           </div>
           <span class="blab ${m.isCurrent ? 'on' : ''}">${m.label}</span>
         </div>`;
