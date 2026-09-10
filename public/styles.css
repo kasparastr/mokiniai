@@ -548,7 +548,7 @@ main { flex: 1; padding-bottom: 108px; }
   flex: 1; width: 100%; display: flex; flex-direction: column; justify-content: flex-end;
   border-bottom: 1px solid var(--line);
 }
-.bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--green); min-height: 2px; transition: height .2s ease; }
+.bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--green); transition: height .2s ease; }
 .bar.now { background: var(--green-2); }
 .bar.proj {
   background: repeating-linear-gradient(45deg, rgba(31,107,74,.28) 0 4px, rgba(31,107,74,.12) 4px 8px);
