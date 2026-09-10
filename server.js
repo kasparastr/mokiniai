@@ -504,6 +504,48 @@ app.post('/api/lessons/bulk-paid', (req, res) => {
   });
 });
 
+// Move one lesson to another day/time. If it came from the curriculum this
+// affects only that occurrence — the original slot is marked skipped so the
+// generator doesn't put it back.
+app.patch('/api/lessons/:id/move', (req, res) => {
+  mutate(res, async (client) => {
+    const { date, time } = req.body;
+    if (!date || !time) throw new Error('Missing date or time');
+    const { rows } = await client.query('SELECT * FROM lessons WHERE id=$1', [req.params.id]);
+    if (!rows[0]) throw new Error('Lesson not found');
+    const l = rows[0];
+    if (l.curriculum_id && l.date !== date) {
+      await client.query(
+        'INSERT INTO curriculum_skips (curriculum_id, date) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+        [l.curriculum_id, l.date]
+      );
+    }
+    await client.query('UPDATE lessons SET date=$1, time=$2 WHERE id=$3', [date, time, req.params.id]);
+    return l.student_id;
+  });
+});
+
+// Move a curriculum slot. Upcoming generated lessons are rebuilt at the new
+// day and time; anything completed or paid is untouched.
+app.patch('/api/curriculum/:id/move', (req, res) => {
+  mutate(res, async (client) => {
+    const { weekday, time } = req.body;
+    const { rows } = await client.query('SELECT * FROM curriculum WHERE id=$1', [req.params.id]);
+    if (!rows[0]) throw new Error('Slot not found');
+    await client.query('UPDATE curriculum SET weekday=$1, time=$2 WHERE id=$3',
+      [Number(weekday), time, req.params.id]);
+    const today = isoOf(new Date());
+    await client.query(
+      `DELETE FROM lessons
+       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+      [req.params.id, today]
+    );
+    await client.query('DELETE FROM curriculum_skips WHERE curriculum_id=$1 AND date >= $2',
+      [req.params.id, today]);
+    return rows[0].student_id;
+  });
+});
+
 // Deleting a lesson that came from the curriculum removes only that week.
 // The slot keeps generating; only deleting it in Curriculum stops it.
 app.delete('/api/lessons/:id', (req, res) => {
