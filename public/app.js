@@ -22,6 +22,7 @@ let state = {
   filterStatus: 'all',
   filterPaid: 'all',
   filterStudent: 'all',
+  chartMode: 'earned',
   selecting: false,
   selected: {},
   weekStart: mondayOf(new Date()),
@@ -171,6 +172,42 @@ function monthStats() {
 }
 
 // Outstanding lessons grouped by student, biggest debt first.
+// Revenue history. Two different questions, so two different numbers:
+//   earned    = value of lessons actually taught that month
+//   collected = money that landed that month (payments + directly paid lessons)
+// Prepayments make these diverge on purpose — cash arrives before the teaching.
+function monthlySeries(count) {
+  const now = new Date();
+  const out = [];
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const ym = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    out.push({
+      ym,
+      date: d,
+      label: d.toLocaleDateString('en-GB', { month: 'short' }),
+      year: d.getFullYear(),
+      earned: 0, collected: 0, scheduled: 0, lessons: 0,
+      isCurrent: i === 0,
+    });
+  }
+  const idx = {};
+  out.forEach(m => { idx[m.ym] = m; });
+
+  state.lessons.forEach(l => {
+    const m = idx[l.date.slice(0, 7)];
+    if (!m) return;
+    if (l.status === 'completed') { m.earned += value(l); m.lessons += 1; }
+    if (l.status === 'scheduled') m.scheduled += value(l);
+    if (l.paidCash) m.collected += value(l);
+  });
+  state.payments.forEach(p => {
+    const m = idx[p.date.slice(0, 7)];
+    if (m) m.collected += p.amount;
+  });
+  return out;
+}
+
 function owedByStudent() {
   const map = {};
   unpaidLessons().forEach(l => {
@@ -345,6 +382,8 @@ function overviewView() {
       </div>
     </section>
 
+    ${revenueSection()}
+
     ${stale.length ? `
       <div class="nudge">
         <div>
@@ -389,6 +428,81 @@ function overviewView() {
     ${!groups.length && !next.length && !stale.length ? `
       <div class="empty sm"><p>Nothing outstanding, nothing scheduled.</p></div>` : ''}
   </div>`;
+}
+
+function revenueSection() {
+  const months = monthlySeries(6);
+  const cur = months[months.length - 1];
+  const prev = months[months.length - 2];
+  const mode = state.chartMode;
+
+  const projected = cur.earned + cur.scheduled;
+  const peak = Math.max(1, ...months.map(m =>
+    mode === 'earned' ? (m.isCurrent ? m.earned + m.scheduled : m.earned) : m.collected));
+
+  // Months with any activity, for a fair average.
+  const past = months.slice(0, -1).filter(m => m.earned > 0 || m.collected > 0);
+  const avg = past.length
+    ? past.reduce((a, m) => a + (mode === 'earned' ? m.earned : m.collected), 0) / past.length
+    : 0;
+
+  const prevVal = mode === 'earned' ? prev.earned : prev.collected;
+  const curVal = mode === 'earned' ? projected : cur.collected;
+  const delta = prevVal > 0 ? ((curVal - prevVal) / prevVal) * 100 : null;
+
+  return `<section class="rev">
+    <div class="rev-h">
+      <h3>Revenue</h3>
+      <div class="rev-tabs">
+        <button class="rev-t ${mode === 'earned' ? 'on' : ''}" data-a="chart-mode" data-v="earned">Taught</button>
+        <button class="rev-t ${mode === 'collected' ? 'on' : ''}" data-a="chart-mode" data-v="collected">Received</button>
+      </div>
+    </div>
+
+    <div class="bars">
+      ${months.map(m => {
+        const solid = mode === 'earned' ? m.earned : m.collected;
+        const proj = (mode === 'earned' && m.isCurrent) ? m.scheduled : 0;
+        const hS = (solid / peak) * 100;
+        const hP = (proj / peak) * 100;
+        const tip = mode === 'earned'
+          ? `${m.label}: ${money(m.earned)} taught${proj ? `, ${money(proj)} still booked` : ''}`
+          : `${m.label}: ${money(m.collected)} received`;
+        return `<div class="bcol" title="${tip}">
+          <div class="bwrap">
+            ${hP > 0 ? `<div class="bar proj" style="height:${hP.toFixed(1)}%"></div>` : ''}
+            <div class="bar ${m.isCurrent ? 'now' : ''}" style="height:${hS.toFixed(1)}%"></div>
+          </div>
+          <span class="blab ${m.isCurrent ? 'on' : ''}">${m.label}</span>
+        </div>`;
+      }).join('')}
+    </div>
+
+    <div class="rev-k">
+      <div>
+        <span class="lbl">${mode === 'earned' ? 'This month, projected' : 'Received this month'}</span>
+        <span class="k-num">${money(curVal)}</span>
+        ${mode === 'earned' && cur.scheduled > 0
+          ? `<span class="k-sub">${money(cur.earned)} taught · ${money(cur.scheduled)} still booked</span>`
+          : `<span class="k-sub">${cur.lessons} lesson${cur.lessons === 1 ? '' : 's'} taught</span>`}
+      </div>
+      <div>
+        <span class="lbl">vs ${prev.label}</span>
+        <span class="k-num ${delta == null ? 'flat' : (delta >= 0 ? 'up' : 'down')}">
+          ${delta == null ? '—' : (delta >= 0 ? '+' : '') + delta.toFixed(0) + '%'}
+        </span>
+        <span class="k-sub">${money(prevVal)} then</span>
+      </div>
+      <div>
+        <span class="lbl">Monthly average</span>
+        <span class="k-num">${money(avg)}</span>
+        <span class="k-sub">${past.length} month${past.length === 1 ? '' : 's'} of history</span>
+      </div>
+    </div>
+    ${mode === 'earned'
+      ? '<p class="rev-x">Value of lessons taught, counted when they happen. The pale part of this month is what\'s still on the calendar.</p>'
+      : '<p class="rev-x">Money that actually landed, counted on the day it arrived. Prepaid blocks land in full up front.</p>'}
+  </section>`;
 }
 
 // ---------- Lesson row ----------
@@ -519,7 +633,7 @@ function curriculumView() {
       <span>These repeat indefinitely. Deleting a lesson in the calendar skips just that week — remove it here to stop it for good.</span>
     </div>
 
-    <div class="wk" style="--slot:${SLOT_H}px">
+    <div class="wk" data-grid="cur" data-from="${from}" data-to="${to}" style="--slot:${SLOT_H}px">
       <div class="wk-corner"></div>
       ${DAY_NAMES.map((d, i) => `
         <div class="wk-dh">
@@ -532,7 +646,7 @@ function curriculumView() {
       </div>
 
       ${DAY_NAMES.map((d, i) => `
-        <div class="wk-col" style="height:${hours.length * SLOT_H}px">
+        <div class="wk-col" data-wd="${i}" style="height:${hours.length * SLOT_H}px">
           ${hours.map(m => `<button class="wk-slot ${m >= 1440 ? 'night' : ''}" style="height:${SLOT_H}px"
               data-a="new-cur" data-v="${i}" data-t="${clockLabel(m)}"
               aria-label="Add ${DAY_NAMES[i]} ${clockLabel(m)}"></button>`).join('')}
@@ -542,7 +656,7 @@ function curriculumView() {
           }), from).map(b => curBlockHTML(b)).join('')}
         </div>`).join('')}
     </div>
-    <p class="wk-hint">${total} slot${total === 1 ? '' : 's'} a week${total ? ' · ' + money(state.curriculum.reduce((a, c) => a + c.amount, 0)) + ' if all go ahead' : ''} · click a free slot to add one</p>
+    <p class="wk-hint">${total} slot${total === 1 ? '' : 's'} a week${total ? ' · ' + money(state.curriculum.reduce((a, c) => a + c.amount, 0)) + ' if all go ahead' : ''} · drag to rearrange, click a free slot to add one</p>
   </div>`;
 }
 
@@ -554,7 +668,7 @@ function curBlockHTML(b) {
   const h = Math.max(26, ((b.e - b.s) / 60) * SLOT_H - 3);
   const w = 100 / b.cols;
   const short = h < 42;
-  return `<button class="wk-b ${short ? 'tiny' : ''}" data-a="edit-cur" data-id="${c.id}"
+  return `<button class="wk-b drg ${short ? 'tiny' : ''}" data-a="edit-cur" data-id="${c.id}" data-dur="${Math.max(20, c.duration)}" data-start="${b.s}"
     style="top:${top}px;height:${h}px;left:calc(${b.col * w}% + 2px);width:calc(${w}% - 4px);
            background:${tint(col, .16)};border-left:3px solid ${col}">
     <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
@@ -652,7 +766,7 @@ function weekView() {
       <button class="btn sm ghost" data-a="wk-today">This week</button>
     </div>
 
-    <div class="wk" style="--slot:${SLOT_H}px">
+    <div class="wk" data-grid="cal" data-from="${from}" data-to="${to}" style="--slot:${SLOT_H}px">
       <div class="wk-corner"></div>
       ${days.map((d, i) => `
         <div class="wk-dh ${isoDays[i] === todayIso ? 'today' : ''}">
@@ -666,7 +780,7 @@ function weekView() {
       </div>
 
       ${days.map((d, i) => `
-        <div class="wk-col ${isoDays[i] === todayIso ? 'today' : ''}" style="height:${hours.length * SLOT_H}px">
+        <div class="wk-col ${isoDays[i] === todayIso ? 'today' : ''}" data-date="${isoDays[i]}" data-next="${toISO(addDays(state.weekStart, i + 1))}" style="height:${hours.length * SLOT_H}px">
           ${hours.map(m => {
             const past = m >= 1440;
             const slotDate = past ? toISO(addDays(state.weekStart, i + 1)) : isoDays[i];
@@ -677,7 +791,7 @@ function weekView() {
           ${layoutDay(columns[i], from).map(b => blockHTML(b)).join('')}
         </div>`).join('')}
     </div>
-    <p class="wk-hint">08:00 through 01:00. Click an empty slot to book, or a lesson to edit it.</p>
+    <p class="wk-hint">Drag a lesson to reschedule it. Click a free slot to book, or a lesson to edit it.</p>
   </div>`;
 }
 
@@ -710,8 +824,8 @@ function blockHTML(b) {
   const w = 100 / b.cols;
   const short = h < 42;
   const state_cls = l.status === 'cancelled' ? 'off' : (l.status === 'completed' && !l.paid ? 'owe' : '');
-  return `<button class="wk-b ${state_cls} ${short ? 'tiny' : ''}"
-    data-a="open-lesson" data-id="${l.id}"
+  return `<button class="wk-b drg ${state_cls} ${short ? 'tiny' : ''}"
+    data-a="open-lesson" data-id="${l.id}" data-dur="${Math.max(20, l.duration)}" data-start="${b.s}"
     style="top:${top}px;height:${h}px;left:calc(${b.col * w}% + 2px);width:calc(${w}% - 4px);
            background:${tint(c, .14)};border-left:3px solid ${c}">
     <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
@@ -1130,6 +1244,7 @@ async function doConfirm() {
 
 // ---------- Events ----------
 document.addEventListener('click', (e) => {
+  if (justDragged) { justDragged = false; return; }
   const ov = e.target.closest('.ov');
   if (ov && e.target === ov) {
     if (ov.dataset.ov === 'confirm') confirmModal = null;
@@ -1294,6 +1409,7 @@ document.addEventListener('click', (e) => {
       };
       render(); break;
     }
+    case 'chart-mode': state.chartMode = v; render(); break;
     case 'sel-start': state.selecting = true; state.selected = {}; render(); break;
     case 'sel-cancel': state.selecting = false; state.selected = {}; render(); break;
     case 'toggle-sel':
@@ -1421,6 +1537,134 @@ document.addEventListener('change', (e) => {
   }
   if (lessonModal && f === 'subject') { lessonModal.subject = e.target.value; return; }
   if (studentModal && f === 'subject') { studentModal.subject = e.target.value; return; }
+});
+
+// ---------- Drag and drop ----------
+// Pointer events rather than HTML5 drag, so this works the same with a mouse
+// and a finger. A press that doesn't move is left alone and becomes a click.
+const SNAP = 15;            // minutes
+const DRAG_THRESHOLD = 6;   // px before a press counts as a drag
+let drag = null;
+let justDragged = false;
+
+function gridGeometry(grid) {
+  const cols = [...grid.querySelectorAll('.wk-col')];
+  return {
+    cols,
+    rects: cols.map(c => c.getBoundingClientRect()),
+    from: Number(grid.dataset.from),
+    to: Number(grid.dataset.to),
+    kind: grid.dataset.grid,
+  };
+}
+
+function dropTarget(g, clientX, topY, dur) {
+  // Nearest column horizontally, clamped to the grid.
+  let idx = g.rects.findIndex(r => clientX >= r.left && clientX <= r.right);
+  if (idx === -1) {
+    let best = 0, bestD = Infinity;
+    g.rects.forEach((r, i) => {
+      const d = clientX < r.left ? r.left - clientX : clientX - r.right;
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    idx = best;
+  }
+  const r = g.rects[idx];
+  const raw = g.from + ((topY - r.top) / SLOT_H) * 60;
+  let mins = Math.round(raw / SNAP) * SNAP;
+  mins = Math.max(g.from, Math.min(mins, g.to - dur));
+  return { idx, mins };
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (state.selecting || e.button > 0) return;
+  const b = e.target.closest('.wk-b.drg');
+  if (!b) return;
+  const grid = b.closest('.wk');
+  if (!grid) return;
+  const rect = b.getBoundingClientRect();
+  drag = {
+    el: b, grid,
+    id: b.dataset.id,
+    dur: Number(b.dataset.dur) || 60,
+    startMins: Number(b.dataset.start),
+    startX: e.clientX, startY: e.clientY,
+    grabX: e.clientX - rect.left,
+    grabY: e.clientY - rect.top,
+    w: rect.width, h: rect.height,
+    active: false, target: null, ghost: null, geo: null,
+  };
+});
+
+document.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  if (!drag.active) {
+    if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
+    drag.active = true;
+    drag.geo = gridGeometry(drag.grid);
+    drag.el.classList.add('drag-float');
+    drag.el.style.width = drag.w + 'px';
+    drag.el.style.height = drag.h + 'px';
+    drag.ghost = document.createElement('div');
+    drag.ghost.className = 'drop-ghost';
+    drag.ghost.style.height = drag.h + 'px';
+    document.body.classList.add('dragging');
+  }
+  e.preventDefault();
+  drag.el.style.left = (e.clientX - drag.grabX) + 'px';
+  drag.el.style.top = (e.clientY - drag.grabY) + 'px';
+
+  const t = dropTarget(drag.geo, e.clientX, e.clientY - drag.grabY, drag.dur);
+  drag.target = t;
+  const col = drag.geo.cols[t.idx];
+  drag.ghost.style.top = (((t.mins - drag.geo.from) / 60) * SLOT_H) + 'px';
+  drag.ghost.textContent = clockLabel(t.mins);
+  if (drag.ghost.parentNode !== col) col.appendChild(drag.ghost);
+}, { passive: false });
+
+document.addEventListener('pointerup', () => {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  if (!d.active) return;             // a plain click; the click handler takes it
+
+  // Swallow the click that follows the release, but never leave the flag
+  // stuck if no click arrives (e.g. released over empty space).
+  justDragged = true;
+  setTimeout(() => { justDragged = false; }, 60);
+
+  if (d.ghost && d.ghost.parentNode) d.ghost.parentNode.removeChild(d.ghost);
+  document.body.classList.remove('dragging');
+  // No need to unpick the inline styles: every path below re-renders.
+
+  const t = d.target;
+  if (!t) { render(); return; }
+
+  const col = d.geo.cols[t.idx];
+  if (d.geo.kind === 'cur') {
+    const wd = Number(col.dataset.wd);
+    const time = clockLabel(t.mins);
+    const before = state.curriculum.find(c => c.id === d.id);
+    if (before && before.weekday === wd && before.time === time) { render(); return; }
+    mutate('/curriculum/' + d.id + '/move', { method: 'PATCH', body: JSON.stringify({ weekday: wd, time }) });
+  } else {
+    // Past midnight belongs to the following date.
+    const past = t.mins >= 1440;
+    const date = past ? col.dataset.next : col.dataset.date;
+    const time = clockLabel(t.mins);
+    const before = lessonById(d.id);
+    if (before && before.date === date && before.time === time) { render(); return; }
+    mutate('/lessons/' + d.id + '/move', { method: 'PATCH', body: JSON.stringify({ date, time }) });
+  }
+});
+
+document.addEventListener('pointercancel', () => {
+  if (drag && drag.active) {
+    if (drag.ghost && drag.ghost.parentNode) drag.ghost.parentNode.removeChild(drag.ghost);
+    document.body.classList.remove('dragging');
+    drag = null;
+    render();
+  } else { drag = null; }
 });
 
 // Swap between month-with-dots and the week grid when the window crosses
