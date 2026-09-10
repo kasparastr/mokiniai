@@ -609,3 +609,47 @@ body.dragging .wk-slot:hover { background: none; box-shadow: none; }
   font-family: inherit; font-size: 10.5px; padding: 1px 5px;
   background: var(--paper); border: 1px solid var(--line); border-radius: 4px;
 }
+
+/* ---------- Quick actions on hover ---------- */
+.wk-act {
+  position: absolute; top: 3px; right: 3px; z-index: 3;
+  display: flex; gap: 3px;
+  opacity: 0; transform: translateY(-2px);
+  transition: opacity .12s ease, transform .12s ease;
+  pointer-events: none;
+}
+.wk-b:hover .wk-act,
+.wk-b:focus-within .wk-act { opacity: 1; transform: none; pointer-events: auto; }
+@media (hover: none) { .wk-act { opacity: 1; transform: none; pointer-events: auto; } }
+
+.qb {
+  width: 21px; height: 21px; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.94); border: 1px solid var(--line);
+  color: var(--ink-3); cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,.1);
+}
+.qb svg { width: 12px; height: 12px; }
+.qb:hover { border-color: var(--green); color: var(--green); }
+.qb.on { background: var(--green); border-color: var(--green); color: #fff; }
+.qb.pre { background: var(--gold); border-color: var(--gold); color: #fff; }
+.wk-b.tiny .wk-act { top: 2px; right: 2px; }
+.wk-b.tiny .qb { width: 18px; height: 18px; }
+
+/* ---------- Current time marker ---------- */
+.now {
+  position: absolute; left: 0; right: 0; height: 0; z-index: 4;
+  border-top: 1.5px solid #d9a441;
+  pointer-events: none;
+}
+.now.on { border-top-color: #c8891f; }
+.now.on::before {
+  content: ''; position: absolute; left: -3px; top: -4px;
+  width: 7px; height: 7px; border-radius: 99px; background: #c8891f;
+}
+.now-t {
+  position: absolute; right: 3px; top: -8px;
+  font-size: 9.5px; font-weight: 700; color: #8a5d10;
+  background: #fdf3dd; border: 1px solid #edd9a8; border-radius: 99px;
+  padding: 0 5px; font-variant-numeric: tabular-nums; line-height: 15px;
+}
