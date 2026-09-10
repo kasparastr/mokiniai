@@ -504,6 +504,17 @@ app.post('/api/lessons/bulk-paid', (req, res) => {
   });
 });
 
+app.patch('/api/lessons/:id/status', (req, res) => {
+  mutate(res, async (client) => {
+    const { status } = req.body;
+    if (!['scheduled', 'completed', 'cancelled'].includes(status)) throw new Error('Bad status');
+    const { rows } = await client.query(
+      'UPDATE lessons SET status=$1 WHERE id=$2 RETURNING student_id', [status, req.params.id]);
+    if (!rows[0]) throw new Error('Lesson not found');
+    return rows[0].student_id;
+  });
+});
+
 // Move one lesson to another day/time. If it came from the curriculum this
 // affects only that occurrence — the original slot is marked skipped so the
 // generator doesn't put it back.
