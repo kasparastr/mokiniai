@@ -256,6 +256,7 @@ const I = {
   trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
   repeat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 2l4 4-4 4"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
+  euro: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 6.5A6 6 0 0 0 8 12a6 6 0 0 0 9 5.5"/><path d="M4 10.5h8M4 14h8"/></svg>',
   coins: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
 };
 function icon(name, cls) { return `<span class="icn ${cls || ''}">${I[name]}</span>`; }
@@ -756,6 +757,14 @@ function weekView() {
   for (let m = from; m < to; m += 60) hours.push(m);
   const todayIso = todayISO();
 
+  // Current-time marker, drawn across every column so the time is readable
+  // anywhere on the grid, with the label sitting on today's column.
+  const n = new Date();
+  const nowMins = n.getHours() * 60 + n.getMinutes();
+  const nowMark = (nowMins >= from && nowMins < to)
+    ? { top: ((nowMins - from) / 60) * SLOT_H, label: hhmm(nowMins) }
+    : null;
+
   return `<div class="wrap wide">
     <div class="wk-h">
       <div class="wk-nav">
@@ -781,6 +790,7 @@ function weekView() {
 
       ${days.map((d, i) => `
         <div class="wk-col ${isoDays[i] === todayIso ? 'today' : ''}" data-date="${isoDays[i]}" data-next="${toISO(addDays(state.weekStart, i + 1))}" style="height:${hours.length * SLOT_H}px">
+          ${nowMark ? `<div class="now ${isoDays[i] === todayIso ? 'on' : ''}" style="top:${nowMark.top.toFixed(1)}px">${isoDays[i] === todayIso ? `<span class="now-t">${nowMark.label}</span>` : ''}</div>` : ''}
           ${hours.map(m => {
             const past = m >= 1440;
             const slotDate = past ? toISO(addDays(state.weekStart, i + 1)) : isoDays[i];
@@ -830,6 +840,14 @@ function blockHTML(b) {
            background:${tint(c, .14)};border-left:3px solid ${c}">
     <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
     <span class="wk-bt">${clockLabel(b.s)}${short ? '' : `–${clockLabel(b.e)}`}${l.status === 'completed' && !l.paid ? ' · unpaid' : ''}</span>
+    <span class="wk-act">
+      <span class="qb ${l.status === 'completed' ? 'on' : ''}" role="button" tabindex="0"
+        data-a="quick-done" data-id="${l.id}"
+        title="${l.status === 'completed' ? 'Mark as not done yet' : 'Mark done'}">${I.check}</span>
+      <span class="qb ${l.viaPrepay ? 'pre' : (l.paidCash ? 'on' : '')}" role="button" tabindex="0"
+        data-a="quick-paid" data-id="${l.id}"
+        title="${l.viaPrepay ? 'Covered by a prepaid credit' : (l.paidCash ? 'Mark as unpaid' : 'Mark paid')}">${I.euro}</span>
+    </span>
   </button>`;
 }
 
@@ -1409,6 +1427,16 @@ document.addEventListener('click', (e) => {
       };
       render(); break;
     }
+    case 'quick-done': {
+      const l = lessonById(id);
+      if (!l) break;
+      mutate('/lessons/' + id + '/status', {
+        method: 'PATCH',
+        body: JSON.stringify({ status: l.status === 'completed' ? 'scheduled' : 'completed' }),
+      });
+      break;
+    }
+    case 'quick-paid': mutate('/lessons/' + id + '/paid', { method: 'PATCH' }); break;
     case 'chart-mode': state.chartMode = v; render(); break;
     case 'sel-start': state.selecting = true; state.selected = {}; render(); break;
     case 'sel-cancel': state.selecting = false; state.selected = {}; render(); break;
@@ -1578,6 +1606,7 @@ function dropTarget(g, clientX, topY, dur) {
 
 document.addEventListener('pointerdown', (e) => {
   if (state.selecting || e.button > 0) return;
+  if (e.target.closest('.wk-act')) return;   // quick buttons aren't drag handles
   const b = e.target.closest('.wk-b.drg');
   if (!b) return;
   const grid = b.closest('.wk');
@@ -1666,6 +1695,14 @@ document.addEventListener('pointercancel', () => {
     render();
   } else { drag = null; }
 });
+
+// Nudge the current-time marker along. Skipped while dragging or with a sheet
+// open, so nothing under the cursor or a half-typed field gets rebuilt.
+setInterval(() => {
+  if (!state.loaded || state.tab !== 'calendar' || !WIDE()) return;
+  if (drag || lessonModal || studentModal || curForm || confirmModal) return;
+  render();
+}, 60000);
 
 // Swap between month-with-dots and the week grid when the window crosses
 // the breakpoint (e.g. rotating a tablet, or resizing on desktop).
