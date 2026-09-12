@@ -542,19 +542,17 @@ main { flex: 1; padding-bottom: 108px; }
 .rev-t { font-size: 11.5px; font-weight: 500; padding: 4px 11px; border-radius: 99px; color: var(--ink-3); }
 .rev-t.on { background: var(--ink); color: #fff; }
 
-.bars { display: flex; align-items: flex-end; gap: 6px; height: 132px; margin-bottom: 4px; overflow: hidden; }
+.bars { display: flex; align-items: flex-end; gap: 6px; height: 132px; margin-bottom: 4px; }
 .bcol { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; }
 .bwrap {
   flex: 1; width: 100%; display: flex; flex-direction: column; justify-content: flex-end;
   border-bottom: 1px solid var(--line);
 }
-/* Safari can smear this element's fill across the full tile width mid-scroll
-   while its height transitions unless it's forced onto its own GPU layer. */
-.bar {
-  width: 100%; border-radius: 3px 3px 0 0; background: var(--green); transition: height .2s ease;
-  transform: translateZ(0); -webkit-transform: translateZ(0);
-}
-.bar.now { background: var(--green-2); }
+.bar { width: 100%; border-radius: 3px 3px 0 0; background: var(--green); transition: height .2s ease; }
+/* Named .cur, not .now — the week grid already has an unrelated, unscoped
+   .now class (the current-time marker) that a bare ".now" here would collide
+   with, inheriting its position:absolute/left:0/right:0 and breaking layout. */
+.bar.cur { background: var(--green-2); }
 .bar.proj {
   background: repeating-linear-gradient(45deg, rgba(31,107,74,.28) 0 4px, rgba(31,107,74,.12) 4px 8px);
   border-radius: 3px 3px 0 0;

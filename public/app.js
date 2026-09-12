@@ -474,7 +474,7 @@ function revenueSection() {
         return `<div class="bcol" title="${tip}">
           <div class="bwrap">
             ${hP > 0 ? `<div class="bar proj" style="height:${hP.toFixed(1)}%"></div>` : ''}
-            ${hS > 0 ? `<div class="bar ${m.isCurrent ? 'now' : ''}" style="height:${hS.toFixed(1)}%"></div>` : ''}
+            ${hS > 0 ? `<div class="bar ${m.isCurrent ? 'cur' : ''}" style="height:${hS.toFixed(1)}%"></div>` : ''}
           </div>
           <span class="blab ${m.isCurrent ? 'on' : ''}">${m.label}</span>
         </div>`;
