@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const googleCalendar = require('./googleCalendar');
 
 const app = express();
 
@@ -131,6 +132,15 @@ async function initDb() {
     await pool.query(`ALTER TABLE lessons ALTER COLUMN paid DROP NOT NULL`);
   }
   // prepaid_balance is no longer used; the balance is derived. Harmless if present.
+
+  // Which Google Calendar event a lesson is mirrored to, if Calendar sync is set up.
+  await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS google_event_id TEXT`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
 }
 
 // ---------- Curriculum ----------
@@ -313,18 +323,23 @@ async function fullState(client) {
 }
 
 // Runs a mutation in a transaction, reconciles, returns full state.
-// fn returns the student id to reconcile, or null to reconcile everyone.
+// fn(client, googleDeletes) returns the student id to reconcile, or null to
+// reconcile everyone. It can push Google Calendar event ids onto
+// googleDeletes for lesson rows it deletes outright.
 async function mutate(res, fn) {
   const client = await pool.connect();
+  const googleDeletes = [];
   try {
     await client.query('BEGIN');
-    const studentId = await fn(client);
+    const studentId = await fn(client, googleDeletes);
     await syncCurriculum(client);
     if (studentId) await reconcileStudent(client, studentId);
     else await reconcileAll(client);
     const state = await fullState(client);
     await client.query('COMMIT');
     res.json(state);
+    for (const id of googleDeletes) googleCalendar.deleteEvent(pool, id).catch(() => {});
+    googleCalendar.syncWindow(pool).catch((e) => console.error('Google Calendar sync failed:', e.message));
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);
@@ -344,6 +359,7 @@ app.get('/api/state', async (req, res) => {
     const state = await fullState(client);
     await client.query('COMMIT');
     res.json(state);
+    googleCalendar.syncWindow(pool).catch((e) => console.error('Google Calendar sync failed:', e.message));
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);
@@ -379,7 +395,12 @@ app.put('/api/students/:id', (req, res) => {
 });
 
 app.delete('/api/students/:id', (req, res) => {
-  mutate(res, async (client) => {
+  mutate(res, async (client, googleDeletes) => {
+    const orphaned = await client.query(
+      'SELECT google_event_id FROM lessons WHERE student_id=$1 AND google_event_id IS NOT NULL',
+      [req.params.id]
+    );
+    orphaned.rows.forEach((r) => googleDeletes.push(r.google_event_id));
     await client.query('DELETE FROM students WHERE id=$1', [req.params.id]);
     return null;
   });
@@ -539,18 +560,20 @@ app.patch('/api/lessons/:id/move', (req, res) => {
 // Move a curriculum slot. Upcoming generated lessons are rebuilt at the new
 // day and time; anything completed or paid is untouched.
 app.patch('/api/curriculum/:id/move', (req, res) => {
-  mutate(res, async (client) => {
+  mutate(res, async (client, googleDeletes) => {
     const { weekday, time } = req.body;
     const { rows } = await client.query('SELECT * FROM curriculum WHERE id=$1', [req.params.id]);
     if (!rows[0]) throw new Error('Slot not found');
     await client.query('UPDATE curriculum SET weekday=$1, time=$2 WHERE id=$3',
       [Number(weekday), time, req.params.id]);
     const today = isoOf(new Date());
-    await client.query(
+    const removed = await client.query(
       `DELETE FROM lessons
-       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false
+       RETURNING google_event_id`,
       [req.params.id, today]
     );
+    removed.rows.forEach((r) => { if (r.google_event_id) googleDeletes.push(r.google_event_id); });
     await client.query('DELETE FROM curriculum_skips WHERE curriculum_id=$1 AND date >= $2',
       [req.params.id, today]);
     return rows[0].student_id;
@@ -560,12 +583,13 @@ app.patch('/api/curriculum/:id/move', (req, res) => {
 // Deleting a lesson that came from the curriculum removes only that week.
 // The slot keeps generating; only deleting it in Curriculum stops it.
 app.delete('/api/lessons/:id', (req, res) => {
-  mutate(res, async (client) => {
+  mutate(res, async (client, googleDeletes) => {
     const { rows } = await client.query(
-      'DELETE FROM lessons WHERE id=$1 RETURNING student_id, curriculum_id, date',
+      'DELETE FROM lessons WHERE id=$1 RETURNING student_id, curriculum_id, date, google_event_id',
       [req.params.id]
     );
     if (!rows[0]) return null;
+    if (rows[0].google_event_id) googleDeletes.push(rows[0].google_event_id);
     if (rows[0].curriculum_id) {
       await client.query(
         'INSERT INTO curriculum_skips (curriculum_id, date) VALUES ($1,$2) ON CONFLICT DO NOTHING',
@@ -592,7 +616,7 @@ app.post('/api/curriculum', (req, res) => {
 });
 
 app.put('/api/curriculum/:id', (req, res) => {
-  mutate(res, async (client) => {
+  mutate(res, async (client, googleDeletes) => {
     const { studentId, weekday, time, duration, subject, amount } = req.body;
     const prev = await client.query('SELECT * FROM curriculum WHERE id=$1', [req.params.id]);
     if (!prev.rows[0]) throw new Error('Not found');
@@ -603,11 +627,13 @@ app.put('/api/curriculum/:id', (req, res) => {
     // Future generated lessons are rebuilt from the new definition; anything
     // already completed or paid is left exactly as it is.
     const today = isoOf(new Date());
-    await client.query(
+    const removed = await client.query(
       `DELETE FROM lessons
-       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false
+       RETURNING google_event_id`,
       [req.params.id, today]
     );
+    removed.rows.forEach((r) => { if (r.google_event_id) googleDeletes.push(r.google_event_id); });
     await client.query('DELETE FROM curriculum_skips WHERE curriculum_id=$1 AND date >= $2', [req.params.id, today]);
     return studentId;
   });
@@ -615,14 +641,16 @@ app.put('/api/curriculum/:id', (req, res) => {
 
 // Removing a slot from the curriculum is what actually stops the recurrence.
 app.delete('/api/curriculum/:id', (req, res) => {
-  mutate(res, async (client) => {
+  mutate(res, async (client, googleDeletes) => {
     const prev = await client.query('SELECT student_id FROM curriculum WHERE id=$1', [req.params.id]);
     const today = isoOf(new Date());
-    await client.query(
+    const removed = await client.query(
       `DELETE FROM lessons
-       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false`,
+       WHERE curriculum_id=$1 AND date >= $2 AND status='scheduled' AND paid_cash=false AND via_prepay=false
+       RETURNING google_event_id`,
       [req.params.id, today]
     );
+    removed.rows.forEach((r) => { if (r.google_event_id) googleDeletes.push(r.google_event_id); });
     // Past lessons stay, but lose their link so nothing dangles.
     await client.query('UPDATE lessons SET curriculum_id=NULL WHERE curriculum_id=$1', [req.params.id]);
     await client.query('DELETE FROM curriculum WHERE id=$1', [req.params.id]);
@@ -644,6 +672,26 @@ app.post('/api/reset', (req, res) => {
     await client.query('TRUNCATE TABLE lessons, payments, curriculum_skips, curriculum, students CASCADE');
     return null;
   });
+});
+
+// ---------- Google Calendar (one-time connect) ----------
+// Visit /auth/google once to grant access; the resulting refresh token is
+// stored in app_settings and used for every sync after that.
+app.get('/auth/google', (req, res) => {
+  if (!googleCalendar.isConfigured()) {
+    return res.status(500).send('Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI first.');
+  }
+  res.redirect(googleCalendar.getAuthUrl());
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  try {
+    if (req.query.error) throw new Error(String(req.query.error));
+    await googleCalendar.exchangeCode(pool, req.query.code, req.query.state);
+    res.send('Google Calendar connected. You can close this tab.');
+  } catch (e) {
+    res.status(500).send('Failed to connect Google Calendar: ' + e.message);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
