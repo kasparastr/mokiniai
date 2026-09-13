@@ -29,6 +29,9 @@ async function setSetting(pool, key, value) {
 }
 
 function getAuthUrl() {
+  // TEMPORARY DEBUG — remove once the invalid_client issue is resolved.
+  console.log('DEBUG client_id:', JSON.stringify(process.env.GOOGLE_CLIENT_ID));
+  console.log('DEBUG redirect_uri:', JSON.stringify(process.env.GOOGLE_REDIRECT_URI));
   pendingState = crypto.randomUUID();
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,
