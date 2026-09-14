@@ -29,9 +29,6 @@ async function setSetting(pool, key, value) {
 }
 
 function getAuthUrl() {
-  // TEMPORARY DEBUG — remove once the invalid_client issue is resolved.
-  console.log('DEBUG client_id:', JSON.stringify(process.env.GOOGLE_CLIENT_ID));
-  console.log('DEBUG redirect_uri:', JSON.stringify(process.env.GOOGLE_REDIRECT_URI));
   pendingState = crypto.randomUUID();
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,
@@ -154,7 +151,7 @@ function isoOf(d) {
 // Re-pushes every active lesson in the window and drops events for anything
 // cancelled. Safe to call repeatedly; a missed or failed call just gets
 // caught up by the next one.
-async function syncWindow(pool) {
+async function runSyncWindow(pool) {
   if (!isConfigured()) return;
   const refreshToken = await getSetting(pool, 'google_refresh_token');
   if (!refreshToken) return;
@@ -187,6 +184,19 @@ async function syncWindow(pool) {
     await deleteEvent(pool, l.google_event_id);
     await pool.query('UPDATE lessons SET google_event_id=NULL WHERE id=$1', [l.id]);
   }
+}
+
+// Two syncs can be triggered close together (an app load plus a mutation
+// right after it). Running them concurrently is what caused a lesson to get
+// two Google events: the second sync would read the lesson's google_event_id
+// before the first sync had finished writing it, and create another one.
+// Chaining them onto one promise makes every call wait for its predecessor.
+let syncChain = Promise.resolve();
+function syncWindow(pool) {
+  syncChain = syncChain.then(() => runSyncWindow(pool)).catch((e) => {
+    console.error('Google Calendar sync failed:', e.message);
+  });
+  return syncChain;
 }
 
 module.exports = { isConfigured, getAuthUrl, exchangeCode, syncWindow, deleteEvent };
