@@ -112,11 +112,27 @@ function endDateTime(date, time, duration) {
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:00`;
 }
 
+// Google Calendar events only accept one of these 11 fixed color ids, not
+// arbitrary hex — so each of Pamoka's student colors (public/app.js COLORS)
+// is matched to the closest one, keeping students visually distinct.
+const EVENT_COLOR_BY_STUDENT_COLOR = {
+  '#2F6B4F': '10', // dark green -> Basil
+  '#8B4A2B': '6',  // brown -> Tangerine
+  '#3B5A6B': '7',  // slate blue -> Peacock
+  '#7A5C2E': '5',  // olive tan -> Banana
+  '#6B3F5C': '3',  // mauve -> Grape
+  '#4A6B3F': '2',  // olive green -> Sage
+  '#8B3A3A': '11', // dark red -> Tomato
+  '#3F5C6B': '9',  // steel blue -> Blueberry
+};
+
 function buildEventBody(l) {
+  const colorId = EVENT_COLOR_BY_STUDENT_COLOR[l.student_color];
   return {
     summary: `${l.student_name} – ${l.subject}`,
     start: { dateTime: `${l.date}T${l.time}:00`, timeZone: 'Europe/Vilnius' },
     end: { dateTime: endDateTime(l.date, l.time, l.duration), timeZone: 'Europe/Vilnius' },
+    ...(colorId ? { colorId } : {}),
   };
 }
 
@@ -161,7 +177,8 @@ async function runSyncWindow(pool) {
   const to = isoOf(new Date(today.getFullYear(), today.getMonth(), today.getDate() + SYNC_HORIZON_DAYS));
 
   const { rows: active } = await pool.query(
-    `SELECT l.id, l.date, l.time, l.duration, l.subject, l.google_event_id, s.name AS student_name
+    `SELECT l.id, l.date, l.time, l.duration, l.subject, l.google_event_id,
+            s.name AS student_name, s.color AS student_color
      FROM lessons l JOIN students s ON s.id = l.student_id
      WHERE l.status IN ('scheduled','completed') AND l.date BETWEEN $1 AND $2`,
     [from, to]
