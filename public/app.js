@@ -835,13 +835,15 @@ function blockHTML(b) {
   const h = Math.max(26, ((b.e - b.s) / 60) * SLOT_H - 3);
   const w = 100 / b.cols;
   const short = h < 42;
-  const state_cls = l.status === 'cancelled' ? 'off' : (l.status === 'completed' && !l.paid ? 'owe' : '');
+  const state_cls = l.status === 'cancelled' ? 'off'
+    : l.status === 'completed' ? (l.paid ? 'paid' : 'owe')
+    : '';
   return `<button class="wk-b drg ${state_cls} ${short ? 'tiny' : ''}"
     data-a="open-lesson" data-id="${l.id}" data-dur="${Math.max(20, l.duration)}" data-start="${b.s}"
     style="top:${top}px;height:${h}px;left:calc(${b.col * w}% + 2px);width:calc(${w}% - 4px);
            background:${tint(c, .14)};border-left:3px solid ${c}">
     <span class="wk-bn">${st ? esc(st.name) : 'Unknown'}</span>
-    <span class="wk-bt">${clockLabel(b.s)}${short ? '' : `–${clockLabel(b.e)}`}${l.status === 'completed' && !l.paid ? ' · unpaid' : ''}</span>
+    <span class="wk-bt">${clockLabel(b.s)}${short ? '' : `–${clockLabel(b.e)}`}${l.status === 'completed' ? (l.paid ? ' · paid' : ' · unpaid') : ''}</span>
     <span class="wk-act">
       <span class="qb ${l.status === 'completed' ? 'on' : ''}" role="button" tabindex="0"
         data-a="quick-done" data-id="${l.id}"
