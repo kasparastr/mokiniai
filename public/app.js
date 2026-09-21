@@ -23,6 +23,7 @@ let state = {
   filterPaid: 'all',
   filterStudent: 'all',
   chartMode: 'earned',
+  forecastHorizon: 6,
   selecting: false,
   selected: {},
   weekStart: mondayOf(new Date()),
@@ -208,6 +209,84 @@ function monthlySeries(count) {
   return out;
 }
 
+// Forecasts future cash by replaying each student's own payment rhythm
+// forward, rather than assuming lessons=cash in the same month:
+//   - a prepaid-block payer isn't expected to pay again until that
+//     block's lessons are used up (based on their curriculum's weekly
+//     frequency), then the same size block recurring
+//   - everyone else is assumed to keep paying roughly as their lessons
+//     happen, so their future months use scheduled lesson value
+// Deliberately lumpy month to month — that's the real shape of prepaid
+// income, not a smoothed average.
+function forecastMonths(count) {
+  const now = new Date();
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const horizonEnd = new Date(now.getFullYear(), now.getMonth() + count, 1);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    out.push({
+      ym: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      label: d.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
+      total: 0,
+    });
+  }
+  const idx = {};
+  out.forEach(m => { idx[m.ym] = m; });
+
+  state.students.forEach(st => {
+    const lastPrepaid = state.payments
+      .filter(p => p.studentId === st.id && p.kind === 'prepaid')
+      .sort((a, b) => a.date < b.date ? 1 : -1)[0];
+
+    if (lastPrepaid) {
+      const sessionsPerWeek = state.curriculum.filter(c => c.studentId === st.id).length || 1;
+      const blockDays = Math.max(1, Math.round((lastPrepaid.lessonsCount / sessionsPerWeek) * 7));
+      let next = addDays(parseISO(lastPrepaid.date), blockDays);
+      while (next < monthStart) next = addDays(next, blockDays);
+      while (next < horizonEnd) {
+        const m = idx[toISO(next).slice(0, 7)];
+        if (m) m.total += lastPrepaid.amount;
+        next = addDays(next, blockDays);
+      }
+    } else {
+      state.lessons.forEach(l => {
+        if (l.studentId !== st.id || l.status === 'cancelled') return;
+        if (parseISO(l.date) < monthStart) return;
+        const m = idx[l.date.slice(0, 7)];
+        if (m) m.total += value(l);
+      });
+    }
+  });
+
+  return out;
+}
+
+function forecastSection() {
+  const horizon = state.forecastHorizon;
+  const months = forecastMonths(horizon);
+  const total = months.reduce((a, m) => a + m.total, 0);
+
+  return `<section class="rev">
+    <div class="rev-h">
+      <h3>Forecast</h3>
+      <div class="rev-tabs">
+        ${[3, 6, 12].map(n => `<button class="rev-t ${horizon === n ? 'on' : ''}" data-a="forecast-horizon" data-v="${n}">${n}mo</button>`).join('')}
+      </div>
+    </div>
+    <div class="rev-k">
+      <div>
+        <span class="lbl">Expected over ${horizon} months</span>
+        <span class="k-num">${money(total)}</span>
+      </div>
+    </div>
+    <div class="fc-rows">
+      ${months.map(m => `<div class="fc-row"><span class="fc-m">${m.label}</span><span class="fc-v">${money(m.total)}</span></div>`).join('')}
+    </div>
+    <p class="rev-x">Pay-per-lesson students are projected from lessons on the calendar. Prepaid-block students aren't expected to pay again until their current block runs out, then the same size block recurring — so some months land higher than others on purpose.</p>
+  </section>`;
+}
+
 function owedByStudent() {
   const map = {};
   unpaidLessons().forEach(l => {
@@ -384,6 +463,8 @@ function overviewView() {
     </section>
 
     ${revenueSection()}
+
+    ${forecastSection()}
 
     ${stale.length ? `
       <div class="nudge">
@@ -1442,6 +1523,7 @@ document.addEventListener('click', (e) => {
     }
     case 'quick-paid': mutate('/lessons/' + id + '/paid', { method: 'PATCH' }); break;
     case 'chart-mode': state.chartMode = v; render(); break;
+    case 'forecast-horizon': state.forecastHorizon = Number(v); render(); break;
     case 'sel-start': state.selecting = true; state.selected = {}; render(); break;
     case 'sel-cancel': state.selecting = false; state.selected = {}; render(); break;
     case 'toggle-sel':
