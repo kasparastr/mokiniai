@@ -3,11 +3,16 @@ const path = require('path');
 const crypto = require('crypto');
 const { Pool } = require('pg');
 const googleCalendar = require('./googleCalendar');
+const auth = require('./auth');
 
 const app = express();
 
 // ---------- Optional password gate ----------
+// A valid session cookie (set by the passwordless /login flow) skips this
+// entirely; otherwise it falls back to the original basic-auth prompt.
 function basicAuth(req, res, next) {
+  if (req.path === '/login' || req.path.startsWith('/login/')) return next();
+  if (auth.hasValidSession(req)) return next();
   const password = process.env.APP_PASSWORD;
   if (!password) return next();
   const header = req.headers.authorization || '';
@@ -139,6 +144,17 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
       value TEXT
+    );
+  `);
+
+  // One-time passwordless login links. Each row is deleted the moment it's
+  // used (or ignored once expired), so this table only ever holds pending,
+  // unused links.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS login_tokens (
+      token TEXT PRIMARY KEY,
+      created_at BIGINT NOT NULL,
+      expires_at BIGINT NOT NULL
     );
   `);
 }
@@ -692,6 +708,67 @@ app.get('/auth/google/callback', async (req, res) => {
   } catch (e) {
     res.status(500).send('Failed to connect Google Calendar: ' + e.message);
   }
+});
+
+// ---------- Passwordless login (alongside the password gate, not instead) ----------
+const LOGIN_PAGE_HTML = `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in — Pamoka</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f7f6f3; color: #1a1815;
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  .card { background: #fffefb; border: 1px solid #e4e0d8; border-radius: 10px; padding: 28px; max-width: 340px; width: 90%; text-align: center; }
+  h1 { font-size: 19px; margin: 0 0 6px; }
+  p { font-size: 13px; color: #6b6560; margin: 0 0 18px; }
+  button { width: 100%; padding: 11px; border-radius: 6px; border: none; background: #1f6b4a; color: #fff; font-size: 14px; font-weight: 500; cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .msg { margin-top: 14px; font-size: 13px; }
+  .msg.err { color: #9c3521; }
+  .msg.ok { color: #1f6b4a; }
+</style></head>
+<body>
+  <div class="card">
+    <h1>Pamoka</h1>
+    <p>Get a one-time login link by email.</p>
+    <button id="btn" onclick="send()">Send me a login link</button>
+    <div id="msg" class="msg"></div>
+  </div>
+  <script>
+    async function send() {
+      const btn = document.getElementById('btn');
+      const msg = document.getElementById('msg');
+      btn.disabled = true; msg.textContent = ''; msg.className = 'msg';
+      try {
+        const res = await fetch('/login', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to send link');
+        msg.textContent = 'Check your email — the link expires in 15 minutes.';
+        msg.className = 'msg ok';
+      } catch (e) {
+        msg.textContent = e.message; msg.className = 'msg err'; btn.disabled = false;
+      }
+    }
+  </script>
+</body></html>`;
+
+app.get('/login', (req, res) => {
+  res.type('html').send(LOGIN_PAGE_HTML);
+});
+
+app.post('/login', async (req, res) => {
+  try {
+    await auth.requestLoginLink(pool, `https://${req.get('host')}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.get('/login/verify', async (req, res) => {
+  const ok = await auth.verifyToken(pool, req.query.token);
+  if (!ok) return res.status(400).send('This link is invalid or has expired. <a href="/login">Request a new one</a>.');
+  auth.setSessionCookie(res);
+  res.redirect('/');
 });
 
 const PORT = process.env.PORT || 3000;
