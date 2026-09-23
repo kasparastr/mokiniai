@@ -4,14 +4,18 @@ const crypto = require('crypto');
 const { Pool } = require('pg');
 const googleCalendar = require('./googleCalendar');
 const auth = require('./auth');
+const portal = require('./portal');
 
 const app = express();
 
 // ---------- Optional password gate ----------
 // A valid session cookie (set by the passwordless /login flow) skips this
 // entirely; otherwise it falls back to the original basic-auth prompt.
+// /portal is a student's own scoped view — a separate login entirely, so it
+// isn't gated by the tutor's password or session at all.
 function basicAuth(req, res, next) {
   if (req.path === '/login' || req.path.startsWith('/login/')) return next();
+  if (req.path === '/portal' || req.path.startsWith('/portal/')) return next();
   if (auth.hasValidSession(req)) return next();
   const password = process.env.APP_PASSWORD;
   if (!password) return next();
@@ -157,7 +161,33 @@ async function initDb() {
       expires_at BIGINT NOT NULL
     );
   `);
+
+  // A student's own login into their scoped view — one row per student who's
+  // been granted portal access; most students will never have one.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS portal_accounts (
+      student_id TEXT PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL
+    );
+  `);
+  // A student asking (in their own words) for a different time or similar —
+  // shows up for the tutor to read and act on by hand, nothing automatic.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS portal_requests (
+      id TEXT PRIMARY KEY,
+      student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      message TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+  `);
 }
+
+// A fixed weekly rule shown to students, not derived from the calendar:
+// available every day except Wednesday and Friday, 17:00-21:00. Weekday
+// numbering matches the rest of the app (0=Monday..6=Sunday).
+const AVAILABILITY = { excludedWeekdays: [2, 4], startTime: '17:00', endTime: '21:00' };
 
 // ---------- Curriculum ----------
 // The curriculum is a generic week. Rather than modelling infinite recurrence,
@@ -255,7 +285,7 @@ async function reconcileAll(client) {
 }
 
 // ---------- Serialization ----------
-function mapStudent(r, creditsById, usedById) {
+function mapStudent(r, creditsById, usedById, portalSet) {
   const credits = creditsById[r.id] || 0;
   const used = usedById[r.id] || 0;
   return {
@@ -268,6 +298,7 @@ function mapStudent(r, creditsById, usedById) {
     creditsTotal: credits,
     creditsUsed: used,
     prepaidBalance: credits - used,
+    hasPortal: portalSet ? portalSet.has(r.id) : false,
   };
 }
 function mapLesson(r, payMap) {
@@ -319,6 +350,11 @@ async function fullState(client) {
   const curRes = await q.query('SELECT * FROM curriculum WHERE active = true ORDER BY weekday, time');
   const creditsRes = await q.query('SELECT student_id, COALESCE(SUM(lessons_count),0) AS c FROM payments GROUP BY student_id');
   const usedRes = await q.query('SELECT student_id, COUNT(*) AS c FROM lessons WHERE via_prepay = true GROUP BY student_id');
+  const portalRes = await q.query('SELECT student_id FROM portal_accounts');
+  const requestsRes = await q.query(
+    `SELECT r.id, r.student_id, r.message, r.created_at, s.name AS student_name
+     FROM portal_requests r JOIN students s ON s.id = r.student_id ORDER BY r.created_at DESC`
+  );
   const payMap = {};
   paymentsRes.rows.forEach(r => { payMap[r.id] = r; });
 
@@ -326,14 +362,18 @@ async function fullState(client) {
   creditsRes.rows.forEach(r => { creditsById[r.student_id] = Number(r.c); });
   const usedById = {};
   usedRes.rows.forEach(r => { usedById[r.student_id] = Number(r.c); });
+  const portalSet = new Set(portalRes.rows.map(r => r.student_id));
 
   return {
-    students: studentsRes.rows.map(r => mapStudent(r, creditsById, usedById)),
+    students: studentsRes.rows.map(r => mapStudent(r, creditsById, usedById, portalSet)),
     lessons: lessonsRes.rows.map(r => mapLesson(r, payMap)),
     payments: paymentsRes.rows.map(mapPayment),
     curriculum: curRes.rows.map(r => ({
       id: r.id, studentId: r.student_id, weekday: r.weekday, time: r.time,
       duration: r.duration, subject: r.subject, amount: Number(r.amount), startDate: r.start_date,
+    })),
+    portalRequests: requestsRes.rows.map(r => ({
+      id: r.id, studentId: r.student_id, studentName: r.student_name, message: r.message, createdAt: r.created_at,
     })),
   };
 }
@@ -690,6 +730,36 @@ app.post('/api/reset', (req, res) => {
   });
 });
 
+// ---------- Student portal accounts (tutor-managed) ----------
+app.post('/api/students/:id/portal-account', (req, res) => {
+  mutate(res, async (client) => {
+    const { username, password } = req.body;
+    if (!username || !password) throw new Error('Username and password are required');
+    const { salt, hash } = portal.makeAccount(password);
+    await client.query(
+      `INSERT INTO portal_accounts (student_id, username, password_hash, password_salt)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (student_id) DO UPDATE SET username=$2, password_hash=$3, password_salt=$4`,
+      [req.params.id, username, hash, salt]
+    );
+    return null;
+  });
+});
+
+app.delete('/api/students/:id/portal-account', (req, res) => {
+  mutate(res, async (client) => {
+    await client.query('DELETE FROM portal_accounts WHERE student_id=$1', [req.params.id]);
+    return null;
+  });
+});
+
+app.delete('/api/portal-requests/:id', (req, res) => {
+  mutate(res, async (client) => {
+    await client.query('DELETE FROM portal_requests WHERE id=$1', [req.params.id]);
+    return null;
+  });
+});
+
 // ---------- Google Calendar (one-time connect) ----------
 // Visit /auth/google once to grant access; the resulting refresh token is
 // stored in app_settings and used for every sync after that.
@@ -713,23 +783,48 @@ app.get('/auth/google/callback', async (req, res) => {
 // ---------- Passwordless login (alongside the password gate, not instead) ----------
 const LOGIN_PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Log in — Pamoka</title>
+<title>Pamoka</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f7f6f3; color: #1a1815;
-    display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-  .card { background: #fffefb; border: 1px solid #e4e0d8; border-radius: 10px; padding: 28px; max-width: 340px; width: 90%; text-align: center; }
-  h1 { font-size: 19px; margin: 0 0 6px; }
-  p { font-size: 13px; color: #6b6560; margin: 0 0 18px; }
-  button { width: 100%; padding: 11px; border-radius: 6px; border: none; background: #1f6b4a; color: #fff; font-size: 14px; font-weight: 500; cursor: pointer; }
-  button:disabled { opacity: .6; cursor: default; }
-  .msg { margin-top: 14px; font-size: 13px; }
-  .msg.err { color: #9c3521; }
-  .msg.ok { color: #1f6b4a; }
+  :root {
+    --paper: #f7f6f3; --card: #fffefb; --ink: #1a1815; --ink-2: #6b6560; --ink-3: #9c948c;
+    --line: #e4e0d8; --green: #1f6b4a; --green-2: #14523a; --green-bg: #eef6f1;
+    --rust: #9c3521; --rust-bg: #fdf1ee;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Inter, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: var(--sans); background: var(--paper); color: var(--ink);
+    display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 20px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 32px 28px; max-width: 340px; width: 100%; text-align: center;
+    box-shadow: 0 1px 3px rgba(26,24,21,.04);
+  }
+  .mark {
+    width: 44px; height: 44px; margin: 0 auto 16px; border-radius: 99px; background: var(--green-bg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .mark svg { width: 22px; height: 22px; stroke: var(--green); fill: none; stroke-width: 1.7; }
+  h1 { font-family: var(--serif); font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  p { font-size: 13.5px; color: var(--ink-2); margin: 0 0 22px; line-height: 1.4; }
+  button {
+    width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--green);
+    background: var(--green); color: #fff; font-size: 14px; font-weight: 500; font-family: inherit; cursor: pointer;
+  }
+  button:active { transform: scale(.985); }
+  button:disabled { opacity: .55; cursor: default; transform: none; }
+  .msg { margin-top: 16px; font-size: 12.5px; border-radius: 8px; padding: 10px 12px; display: none; }
+  .msg.show { display: block; }
+  .msg.err { color: var(--rust); background: var(--rust-bg); }
+  .msg.ok { color: var(--green-2); background: var(--green-bg); }
 </style></head>
 <body>
   <div class="card">
+    <div class="mark"><svg viewBox="0 0 24 24"><path d="M4 19.5V6a2 2 0 0 1 2-2h11.5v14H6a2 2 0 0 0-2 2Zm0 0a2 2 0 0 0 2 2h13.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
     <h1>Pamoka</h1>
-    <p>Get a one-time login link by email.</p>
+    <p>No password to remember — we'll email you a one-time link instead.</p>
     <button id="btn" onclick="send()">Send me a login link</button>
     <div id="msg" class="msg"></div>
   </div>
@@ -743,9 +838,9 @@ const LOGIN_PAGE_HTML = `<!doctype html>
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to send link');
         msg.textContent = 'Check your email — the link expires in 15 minutes.';
-        msg.className = 'msg ok';
+        msg.className = 'msg show ok';
       } catch (e) {
-        msg.textContent = e.message; msg.className = 'msg err'; btn.disabled = false;
+        msg.textContent = e.message; msg.className = 'msg show err'; btn.disabled = false;
       }
     }
   </script>
@@ -769,6 +864,74 @@ app.get('/login/verify', async (req, res) => {
   if (!ok) return res.status(400).send('This link is invalid or has expired. <a href="/login">Request a new one</a>.');
   auth.setSessionCookie(res);
   res.redirect('/');
+});
+
+// ---------- Student portal (own account, own data only) ----------
+// Entirely separate login from the tutor's — see the /portal exemption in
+// basicAuth above. Every route here re-derives the student id from the
+// portal session cookie itself; nothing is ever trusted from the request body.
+app.post('/portal/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    const { rows } = await pool.query('SELECT * FROM portal_accounts WHERE username=$1', [username || '']);
+    const acct = rows[0];
+    if (!acct || !portal.verifyPassword(password || '', acct.password_salt, acct.password_hash)) {
+      return res.status(401).json({ error: 'Wrong username or password' });
+    }
+    portal.setPortalSessionCookie(res, acct.student_id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+app.post('/portal/logout', (req, res) => {
+  portal.clearPortalSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get('/portal/state', async (req, res) => {
+  const studentId = portal.getPortalStudentId(req);
+  if (!studentId) return res.status(401).json({ error: 'Not logged in' });
+  try {
+    const studentRes = await pool.query('SELECT * FROM students WHERE id=$1', [studentId]);
+    if (!studentRes.rows[0]) return res.status(404).json({ error: 'Not found' });
+    const creditsRes = await pool.query('SELECT COALESCE(SUM(lessons_count),0) AS c FROM payments WHERE student_id=$1', [studentId]);
+    const usedRes = await pool.query('SELECT COUNT(*) AS c FROM lessons WHERE via_prepay=true AND student_id=$1', [studentId]);
+    const lessonsRes = await pool.query('SELECT * FROM lessons WHERE student_id=$1 ORDER BY date, time', [studentId]);
+    const paymentsRes = await pool.query('SELECT * FROM payments WHERE student_id=$1 ORDER BY date DESC', [studentId]);
+    const payMap = {};
+    paymentsRes.rows.forEach(r => { payMap[r.id] = r; });
+    const requestsRes = await pool.query(
+      'SELECT id, message, created_at FROM portal_requests WHERE student_id=$1 ORDER BY created_at DESC LIMIT 10',
+      [studentId]
+    );
+
+    res.json({
+      student: mapStudent(studentRes.rows[0],
+        { [studentId]: Number(creditsRes.rows[0].c) },
+        { [studentId]: Number(usedRes.rows[0].c) }),
+      lessons: lessonsRes.rows.map(r => mapLesson(r, payMap)),
+      payments: paymentsRes.rows.map(mapPayment),
+      requests: requestsRes.rows.map(r => ({ id: r.id, message: r.message, createdAt: r.created_at })),
+      availability: AVAILABILITY,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Failed to load your data' });
+  }
+});
+
+app.post('/portal/request', async (req, res) => {
+  const studentId = portal.getPortalStudentId(req);
+  if (!studentId) return res.status(401).json({ error: 'Not logged in' });
+  const { message } = req.body;
+  if (!message || !message.trim()) return res.status(400).json({ error: 'Write a message first' });
+  await pool.query(
+    'INSERT INTO portal_requests (id, student_id, message, created_at) VALUES ($1,$2,$3,$4)',
+    [crypto.randomUUID(), studentId, message.trim(), isoOf(new Date())]
+  );
+  res.json({ ok: true });
 });
 
 const PORT = process.env.PORT || 3000;

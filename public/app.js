@@ -35,6 +35,7 @@ let studentModal = null;
 let confirmModal = null;
 let prepayForm = null;
 let curForm = null;
+let portalForm = null;
 
 // ---------- Date helpers ----------
 function toISO(d) {
@@ -369,7 +370,7 @@ function header() {
   return `
     <header class="hdr">
       <div class="hdr-top">
-        <h1>Tally</h1>
+        <h1>${APP_NAME}</h1>
         ${state.busy ? '<span class="dot-busy" aria-label="Saving"></span>' : ''}
       </div>
       ${state.error ? `<div class="banner err">${esc(state.error)}</div>` : ''}
@@ -474,6 +475,15 @@ function overviewView() {
         </div>
         <button class="btn sm pri" data-a="complete-past">Mark done</button>
       </div>` : ''}
+
+    ${state.portalRequests && state.portalRequests.length ? state.portalRequests.map(r => `
+      <div class="nudge">
+        <div>
+          <b>${esc(r.studentName)} asked:</b>
+          <span>${esc(r.message)}</span>
+        </div>
+        <button class="btn sm" data-a="dismiss-portal-request" data-id="${r.id}">Dismiss</button>
+      </div>`).join('') : ''}
 
     ${lowBalance.length ? `
       <div class="nudge soft">
@@ -1192,6 +1202,27 @@ function studentModalHTML() {
           </div>`).join('')}</div>` : ''}
       </div>`}
 
+    ${isNew ? '' : `
+      <div class="prepay">
+        <div class="prepay-h">
+          <div><span class="prepay-l">${f.hasPortal ? 'Portal access is set up' : 'No portal access yet'}</span></div>
+          ${portalForm ? '' : `<button class="btn sm ${f.hasPortal ? '' : 'pri'}" data-a="open-portal-form">${f.hasPortal ? 'Change login' : 'Grant access'}</button>`}
+        </div>
+        <p class="prepay-x">Lets ${esc(f.name)} sign in at <b>/portal</b> to see their own lessons, credits and lesson availability — nothing about any other student.</p>
+        ${f.hasPortal && !portalForm ? `<button class="btn sm dang-o" data-a="ask-revoke-portal" data-id="${f.id}">Revoke access</button>` : ''}
+        ${portalForm ? `
+          <div class="prepay-form">
+            <label class="fl">Username</label>
+            <input type="text" data-f="portalUsername" value="${esc(portalForm.username)}" placeholder="e.g. vytis">
+            <label class="fl">Password</label>
+            <input type="text" data-f="portalPassword" value="${esc(portalForm.password)}" placeholder="Pick something simple">
+            <div class="acts">
+              <button class="btn" data-a="cancel-portal-form">Cancel</button>
+              <button class="btn pri grow" data-a="save-portal-form">Save login</button>
+            </div>
+          </div>` : ''}
+      </div>`}
+
     ${isNew ? '' : (() => {
       const owed = state.lessons.filter(l => l.studentId === f.id && l.status === 'completed' && !l.paid);
       if (!owed.length) return '';
@@ -1323,6 +1354,18 @@ async function savePrepay() {
   render();
 }
 
+async function savePortalAccount() {
+  const f = studentModal, p = portalForm;
+  if (!p || !p.username.trim() || !p.password.trim()) return;
+  const id = f.id;
+  const body = JSON.stringify({ username: p.username.trim(), password: p.password.trim() });
+  portalForm = null;
+  await mutate('/students/' + id + '/portal-account', { method: 'POST', body });
+  const fresh = studentById(id);
+  if (fresh && studentModal) studentModal = { ...fresh };
+  render();
+}
+
 async function doConfirm() {
   const c = confirmModal;
   confirmModal = null;
@@ -1342,6 +1385,12 @@ async function doConfirm() {
     if (fresh && studentModal) { studentModal = { ...fresh }; render(); }
   }
   else if (c.type === 'curriculum') { curForm = null; await mutate('/curriculum/' + c.id, { method: 'DELETE' }); }
+  else if (c.type === 'portal') {
+    const sid = c.id;
+    await mutate('/students/' + sid + '/portal-account', { method: 'DELETE' });
+    const fresh = studentById(sid);
+    if (fresh && studentModal) { studentModal = { ...fresh }; render(); }
+  }
   else if (c.type === 'reset') { await mutate('/reset', { method: 'POST' }); }
 }
 
@@ -1353,7 +1402,7 @@ document.addEventListener('click', (e) => {
     if (ov.dataset.ov === 'confirm') confirmModal = null;
     else if (ov.dataset.ov === 'lesson') lessonModal = null;
     else if (ov.dataset.ov === 'cur') curForm = null;
-    else { studentModal = null; prepayForm = null; }
+    else { studentModal = null; prepayForm = null; portalForm = null; }
     render();
     return;
   }
@@ -1424,7 +1473,7 @@ document.addEventListener('click', (e) => {
     case 'save-lesson': saveLesson(); break;
     case 'close-lesson': lessonModal = null; render(); break;
     case 'save-student': saveStudent(); break;
-    case 'close-student': studentModal = null; prepayForm = null; render(); break;
+    case 'close-student': studentModal = null; prepayForm = null; portalForm = null; render(); break;
     case 'open-prepay':
       prepayForm = { id: null, kind: 'prepaid', lessonsCount: '', amount: '', date: todayISO() };
       render(); break;
@@ -1435,6 +1484,15 @@ document.addEventListener('click', (e) => {
       render(); break;
     case 'cancel-prepay': prepayForm = null; render(); break;
     case 'save-prepay': savePrepay(); break;
+    case 'open-portal-form':
+      portalForm = { username: '', password: '' };
+      render(); break;
+    case 'cancel-portal-form': portalForm = null; render(); break;
+    case 'save-portal-form': savePortalAccount(); break;
+    case 'ask-revoke-portal':
+      confirmModal = { type: 'portal', id, message: 'Revoke portal access? They will no longer be able to sign in to see their own lessons.', verb: 'Revoke' };
+      render(); break;
+    case 'dismiss-portal-request': mutate('/portal-requests/' + id, { method: 'DELETE' }); break;
     case 'ask-del-lesson':
       confirmModal = { type: 'lesson', id: lessonModal.id, message: 'Delete this lesson? Any credit it used goes back to the student.' };
       render(); break;
@@ -1615,6 +1673,10 @@ document.addEventListener('input', (e) => {
     if (f === 'ppCount') { prepayForm.lessonsCount = e.target.value; refreshPerLesson(); return; }
     if (f === 'ppAmount') { prepayForm.amount = e.target.value; refreshPerLesson(); return; }
     if (f === 'ppDate') { prepayForm.date = e.target.value; return; }
+  }
+  if (portalForm) {
+    if (f === 'portalUsername') { portalForm.username = e.target.value; return; }
+    if (f === 'portalPassword') { portalForm.password = e.target.value; return; }
   }
 });
 
