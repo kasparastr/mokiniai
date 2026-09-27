@@ -471,10 +471,11 @@ function overviewView() {
       <div class="nudge">
         <div>
           <b>${stale.length} past lesson${stale.length === 1 ? '' : 's'} still marked scheduled.</b>
-          <span>Marking them done counts them as earned and applies prepaid credits.</span>
+          <span>Check each — mark it done if it happened, or delete it if it didn't.</span>
         </div>
-        <button class="btn sm pri" data-a="complete-past">Mark done</button>
-      </div>` : ''}
+        <button class="btn sm pri" data-a="complete-past">Mark all done</button>
+      </div>
+      <div class="rows" style="margin-bottom:18px;">${stale.map(l => lessonRow(l)).join('')}</div>` : ''}
 
     ${state.portalRequests && state.portalRequests.length ? state.portalRequests.map(r => `
       <div class="nudge">
@@ -942,6 +943,9 @@ function blockHTML(b) {
       <span class="qb ${l.viaPrepay ? 'pre' : (l.paidCash ? 'on' : '')}" role="button" tabindex="0"
         data-a="quick-paid" data-id="${l.id}"
         title="${l.viaPrepay ? 'Covered by a prepaid credit' : (l.paidCash ? 'Mark as unpaid' : 'Mark paid')}">${I.euro}</span>
+      <span class="qb qb-del" role="button" tabindex="0"
+        data-a="quick-del" data-id="${l.id}"
+        title="Delete this lesson">${I.trash}</span>
     </span>
   </button>`;
 }
@@ -1580,6 +1584,9 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'quick-paid': mutate('/lessons/' + id + '/paid', { method: 'PATCH' }); break;
+    case 'quick-del':
+      confirmModal = { type: 'lesson', id, message: 'Delete this lesson? Any credit it used goes back to the student.' };
+      render(); break;
     case 'chart-mode': state.chartMode = v; render(); break;
     case 'forecast-horizon': state.forecastHorizon = Number(v); render(); break;
     case 'sel-start': state.selecting = true; state.selected = {}; render(); break;

@@ -647,6 +647,7 @@ body.dragging .wk-slot:hover { background: none; box-shadow: none; }
 .qb:hover { border-color: var(--green); color: var(--green); }
 .qb.on { background: var(--green); border-color: var(--green); color: #fff; }
 .qb.pre { background: var(--gold); border-color: var(--gold); color: #fff; }
+.qb-del:hover { border-color: var(--rust); color: var(--rust); }
 .wk-b.tiny .wk-act { top: 2px; right: 2px; }
 .wk-b.tiny .qb { width: 18px; height: 18px; }
 
