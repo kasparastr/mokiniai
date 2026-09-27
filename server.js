@@ -16,6 +16,7 @@ const app = express();
 function basicAuth(req, res, next) {
   if (req.path === '/login' || req.path.startsWith('/login/')) return next();
   if (req.path === '/portal' || req.path.startsWith('/portal/')) return next();
+  if (req.path === '/privacy') return next();
   if (auth.hasValidSession(req)) return next();
   const password = process.env.APP_PASSWORD;
   if (!password) return next();
@@ -790,6 +791,32 @@ app.get('/auth/google/dedupe', async (req, res) => {
   } catch (e) {
     res.status(500).send('Failed: ' + e.message);
   }
+});
+
+// ---------- Privacy policy (required by Google to publish the OAuth app) ----------
+app.get('/privacy', (req, res) => {
+  res.type('html').send(`<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — Pamoka</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f7f6f3; color: #1a1815;
+    max-width: 560px; margin: 0 auto; padding: 40px 20px; line-height: 1.55; }
+  h1 { font-family: Georgia, serif; font-size: 22px; }
+  h2 { font-size: 15px; margin-top: 28px; }
+  p, li { font-size: 14px; color: #3a3733; }
+</style></head>
+<body>
+  <h1>Privacy</h1>
+  <p>Pamoka is a private tutoring tracker built and used by a single tutor for their own students. It is not a public product and does not sell, share, or advertise using anyone's data.</p>
+  <h2>What's stored</h2>
+  <p>Student names, lesson schedules, and payment records, entered by the tutor. This is used only to run the tutor's own business.</p>
+  <h2>Google Calendar</h2>
+  <p>If connected, lesson times are mirrored one-way to the tutor's own Google Calendar, so they show up alongside personal events. Nothing is ever read back from Google Calendar into this app.</p>
+  <h2>Email login</h2>
+  <p>If enabled, signing in emails a one-time link to the tutor's own address via a transactional email provider. No other addresses are contacted.</p>
+  <h2>Contact</h2>
+  <p>Questions about this app can be sent to the address configured as its owner.</p>
+</body></html>`);
 });
 
 // ---------- Passwordless login (alongside the password gate, not instead) ----------
