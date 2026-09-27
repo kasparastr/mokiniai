@@ -780,6 +780,18 @@ app.get('/auth/google/callback', async (req, res) => {
   }
 });
 
+// One-time cleanup for duplicate events left by the overlapping-sync bug
+// (now fixed) that ran before the fix was deployed. Behind the normal admin
+// gate, not exempted like the routes above.
+app.get('/auth/google/dedupe', async (req, res) => {
+  try {
+    const result = await googleCalendar.dedupeEvents(pool);
+    res.send(`Done. Found ${result.groupsWithDuplicates} duplicate group(s), removed ${result.deleted} extra event(s).`);
+  } catch (e) {
+    res.status(500).send('Failed: ' + e.message);
+  }
+});
+
 // ---------- Passwordless login (alongside the password gate, not instead) ----------
 const LOGIN_PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
