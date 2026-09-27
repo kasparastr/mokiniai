@@ -216,13 +216,17 @@ function syncWindow(pool) {
   return syncChain;
 }
 
-// One-time cleanup for duplicate events left behind by the overlapping-sync
-// bug (fixed above, but it could already have created stray copies before
-// the fix landed). Duplicates share the same title and start time — nothing
-// else on the calendar would ever match that exactly — so any group with
-// more than one event is a duplicate, and all but one get deleted. If one
-// of them is the event a lesson is actually still pointing at, that one is
-// kept; otherwise it doesn't matter which copy survives.
+// One-time cleanup for stray events left behind by the overlapping-sync bug
+// (fixed above) — including ones that don't look like exact duplicates,
+// e.g. a lesson that got moved before the fix landed can leave both its old
+// and new time sitting on the calendar as two separate, differently-timed
+// events. Rather than matching events against each other, this checks every
+// event against what the database currently says: any event that looks like
+// one of ours (its title starts with a current student's name, the same
+// format buildEventBody always uses) but isn't the id any lesson is actually
+// pointing at is a leftover and gets deleted. A real personal event never
+// starts with a student's name, so this never touches anything else on the
+// calendar.
 async function dedupeEvents(pool) {
   if (!isConfigured()) throw new Error('Google Calendar is not connected.');
   const refreshToken = await getSetting(pool, 'google_refresh_token');
@@ -230,38 +234,28 @@ async function dedupeEvents(pool) {
 
   const { rows: tracked } = await pool.query('SELECT google_event_id FROM lessons WHERE google_event_id IS NOT NULL');
   const trackedIds = new Set(tracked.map((r) => r.google_event_id));
+  const { rows: students } = await pool.query('SELECT name FROM students');
+  const namePrefixes = students.map((s) => `${s.name} – `); // en dash, matches buildEventBody exactly
 
   const timeMin = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
   const timeMax = new Date(Date.now() + 120 * 24 * 60 * 60 * 1000).toISOString();
 
-  const groups = new Map();
+  let deleted = 0;
   let pageToken = null;
   do {
     const params = new URLSearchParams({ timeMin, timeMax, singleEvents: 'true', maxResults: '2500' });
     if (pageToken) params.set('pageToken', pageToken);
     const data = await apiRequest(pool, 'GET', `/events?${params}`);
     for (const ev of data.items || []) {
-      if (!ev.start || !ev.start.dateTime || !ev.summary) continue;
-      const key = `${ev.summary}|${ev.start.dateTime}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(ev.id);
+      if (!ev.summary || trackedIds.has(ev.id)) continue;
+      if (!namePrefixes.some((p) => ev.summary.startsWith(p))) continue;
+      await deleteEvent(pool, ev.id);
+      deleted++;
     }
     pageToken = data.nextPageToken || null;
   } while (pageToken);
 
-  let deleted = 0;
-  let groupsWithDuplicates = 0;
-  for (const ids of groups.values()) {
-    if (ids.length < 2) continue;
-    groupsWithDuplicates++;
-    const keepId = ids.find((id) => trackedIds.has(id)) || ids[0];
-    for (const id of ids) {
-      if (id === keepId) continue;
-      await deleteEvent(pool, id);
-      deleted++;
-    }
-  }
-  return { groupsWithDuplicates, deleted };
+  return { deleted };
 }
 
 module.exports = { isConfigured, getAuthUrl, exchangeCode, syncWindow, deleteEvent, dedupeEvents };

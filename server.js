@@ -787,7 +787,7 @@ app.get('/auth/google/callback', async (req, res) => {
 app.get('/auth/google/dedupe', async (req, res) => {
   try {
     const result = await googleCalendar.dedupeEvents(pool);
-    res.send(`Done. Found ${result.groupsWithDuplicates} duplicate group(s), removed ${result.deleted} extra event(s).`);
+    res.send(`Done. Removed ${result.deleted} stray event(s).`);
   } catch (e) {
     res.status(500).send('Failed: ' + e.message);
   }
