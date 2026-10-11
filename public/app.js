@@ -1095,7 +1095,7 @@ function lessonModalHTML() {
       ` : ''}
     `}
 
-    <label class="fl">Payment</label>
+    ${isNew && !willPrepay ? '' : '<label class="fl">Payment</label>'}
     ${f.viaPrepay ? `
       <div class="paystate prepaid">
         ${I.coins}<div><b>Covered by a prepaid credit</b><span>Deducted from ${st ? esc(st.name) : 'their'} balance automatically.</span></div>
@@ -1111,7 +1111,7 @@ function lessonModalHTML() {
         : (!isNew && f.status === 'completed' && bal > 0)
           ? `<div class="paystate hintbox">${I.coins}<div><b>${bal} prepaid credit${bal === 1 ? '' : 's'} available</b><span>Saving will apply one automatically.</span></div></div>`
           : ''}
-      <button class="btn wide ${willPrepay ? 'ghost' : 'pri'}" data-a="modal-pay">Mark paid directly</button>
+      ${isNew ? '' : `<button class="btn wide ${willPrepay ? 'ghost' : 'pri'}" data-a="modal-pay">Mark paid directly</button>`}
     `}
 
     <label class="fl">Notes</label>
