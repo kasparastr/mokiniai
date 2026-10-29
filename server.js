@@ -797,7 +797,7 @@ app.get('/auth/google/dedupe', async (req, res) => {
 app.get('/privacy', (req, res) => {
   res.type('html').send(`<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Privacy — Pamoka</title>
+<title>Privacy — Coachly</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #f7f6f3; color: #1a1815;
     max-width: 560px; margin: 0 auto; padding: 40px 20px; line-height: 1.55; }
@@ -807,7 +807,7 @@ app.get('/privacy', (req, res) => {
 </style></head>
 <body>
   <h1>Privacy</h1>
-  <p>Pamoka is a private tutoring tracker built and used by a single tutor for their own students. It is not a public product and does not sell, share, or advertise using anyone's data.</p>
+  <p>Coachly is a private tutoring tracker built and used by a single tutor for their own students. It is not a public product and does not sell, share, or advertise using anyone's data.</p>
   <h2>What's stored</h2>
   <p>Student names, lesson schedules, and payment records, entered by the tutor. This is used only to run the tutor's own business.</p>
   <h2>Google Calendar</h2>
@@ -822,7 +822,7 @@ app.get('/privacy', (req, res) => {
 // ---------- Passwordless login (alongside the password gate, not instead) ----------
 const LOGIN_PAGE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Pamoka</title>
+<title>Coachly</title>
 <style>
   :root {
     --paper: #f7f6f3; --card: #fffefb; --ink: #1a1815; --ink-2: #6b6560; --ink-3: #9c948c;
@@ -862,7 +862,7 @@ const LOGIN_PAGE_HTML = `<!doctype html>
 <body>
   <div class="card">
     <div class="mark"><svg viewBox="0 0 24 24"><path d="M4 19.5V6a2 2 0 0 1 2-2h11.5v14H6a2 2 0 0 0-2 2Zm0 0a2 2 0 0 0 2 2h13.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-    <h1>Pamoka</h1>
+    <h1>Coachly</h1>
     <p>No password to remember — we'll email you a one-time link instead.</p>
     <button id="btn" onclick="send()">Send me a login link</button>
     <div id="msg" class="msg"></div>

@@ -67,9 +67,9 @@ async function requestLoginLink(pool, baseUrl) {
     method: 'POST',
     headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      from: 'Pamoka <onboarding@resend.dev>',
+      from: 'Coachly <onboarding@resend.dev>',
       to: process.env.LOGIN_EMAIL,
-      subject: 'Your Pamoka login link',
+      subject: 'Your Coachly login link',
       html: `<p>Click to log in — this link works once and expires in 15 minutes:</p><p><a href="${link}">${link}</a></p>`,
     }),
   });

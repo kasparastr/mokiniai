@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 
-// One-way sync: Pamoka lessons -> a Google Calendar event. Never the reverse.
+// One-way sync: Coachly lessons -> a Google Calendar event. Never the reverse.
 // Recomputed the same way reconcileStudent() is in server.js: every mutation
 // re-pushes current lesson data rather than tracking what changed, so it
 // can't drift even if a sync is missed or the app restarts mid-flight.
@@ -59,7 +59,7 @@ async function exchangeCode(pool, code, state) {
   const data = await res.json();
   if (!res.ok) throw new Error(data.error_description || data.error || 'Token exchange failed');
   if (!data.refresh_token) {
-    throw new Error('Google did not return a refresh token. Revoke Pamoka\'s access at myaccount.google.com/permissions and try again.');
+    throw new Error('Google did not return a refresh token. Revoke this app\'s access at myaccount.google.com/permissions and try again.');
   }
   await setSetting(pool, 'google_refresh_token', data.refresh_token);
 }
@@ -113,7 +113,7 @@ function endDateTime(date, time, duration) {
 }
 
 // Google Calendar events only accept one of these 11 fixed color ids, not
-// arbitrary hex — so each of Pamoka's student colors (public/app.js COLORS)
+// arbitrary hex — so each of Coachly's student colors (public/app.js COLORS)
 // is matched to the closest one, keeping students visually distinct.
 const EVENT_COLOR_BY_STUDENT_COLOR = {
   '#2F6B4F': '10', // dark green -> Basil

@@ -1,6 +1,6 @@
 // ---------- Constants ----------
 // Change this one line to rename the app.
-const APP_NAME = 'Pamoka';
+const APP_NAME = 'Coachly';
 const SUBJECTS = ['Mathematics', 'Economics', 'Other'];
 const COLORS = ['#2F6B4F', '#8B4A2B', '#3B5A6B', '#7A5C2E', '#6B3F5C', '#4A6B3F', '#8B3A3A', '#3F5C6B'];
 const STATUS_LABELS = { scheduled: 'Scheduled', completed: 'Done', cancelled: 'Cancelled' };
