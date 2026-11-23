@@ -114,6 +114,10 @@ function esc(s) {
 function money(n) { return '€' + Number(n || 0).toFixed(2); }
 // What a lesson is actually worth: its share of the payment that covered it,
 // or the standard price if nothing has covered it yet.
+// Price per lesson = hourly rate scaled to this student's lesson length, so
+// something like 25 for 45 minutes never has to be typed as 33.333/hour.
+function lessonMinutes(s) { return Number(s.lessonMinutes) > 0 ? Number(s.lessonMinutes) : 60; }
+function lessonPrice(s) { return Math.round(Number(s.rate) * lessonMinutes(s) / 60 * 100) / 100; }
 function value(l) { return Number(l.effectiveAmount != null ? l.effectiveAmount : l.amount) || 0; }
 
 // ---------- API ----------
@@ -1006,7 +1010,7 @@ function studentsView() {
           <span class="av" style="background:${s.color}">${esc(s.name.trim().charAt(0).toUpperCase())}</span>
           <span class="scard-b">
             <span class="scard-n">${esc(s.name)}</span>
-            <span class="scard-s">${esc(s.subject)}${s.grade ? ' · ' + esc(s.grade) : ''} · ${money(s.rate)}/h · ${done} done</span>
+            <span class="scard-s">${esc(s.subject)}${s.grade ? ' · ' + esc(s.grade) : ''} · ${money(lessonPrice(s))} / ${lessonMinutes(s)} min · ${done} done</span>
           </span>
           <span class="scard-r">
             ${s.prepaidBalance > 0
@@ -1147,8 +1151,12 @@ function studentModalHTML() {
       <div><label class="fl">Grade</label><input type="text" data-f="grade" value="${esc(f.grade || '')}" placeholder="e.g. 11"></div>
     </div>
 
-    <label class="fl">Rate (€ per hour)</label>
-    <input type="number" min="0" step="1" data-f="rate" value="${f.rate}">
+    <div class="two">
+      <div><label class="fl">Lesson length (min)</label>
+        <input type="number" min="5" step="5" inputmode="numeric" data-f="lessonMinutes" value="${lessonMinutes(f)}"></div>
+      <div><label class="fl">Price per lesson (€)</label>
+        <input type="number" min="0" step="0.01" inputmode="decimal" data-f="lessonPrice" value="${f.lessonPrice != null ? f.lessonPrice : lessonPrice(f)}"></div>
+    </div>
 
     ${isNew ? '' : `
       <div class="prepay">
@@ -1165,8 +1173,9 @@ function studentModalHTML() {
           const lessonsBought = hs.reduce((a, p) => a + p.lessonsCount, 0);
           const totalPaid = hs.reduce((a, p) => a + p.amount, 0);
           const avg = lessonsBought ? totalPaid / lessonsBought : 0;
-          const off = Number(f.rate) - avg;
-          return `<p class="prepay-x">${money(totalPaid)} paid for ${lessonsBought} lesson${lessonsBought === 1 ? '' : 's'} — <b>${money(avg)}</b> each${off > 0.005 ? ` (${money(off)} under the ${money(f.rate)} rate)` : ''}. Credits apply themselves to completed lessons, oldest first.</p>`;
+          const priceNow = f.lessonPrice != null ? Number(f.lessonPrice) : lessonPrice(f);
+          const off = priceNow - avg;
+          return `<p class="prepay-x">${money(totalPaid)} paid for ${lessonsBought} lesson${lessonsBought === 1 ? '' : 's'} — <b>${money(avg)}</b> each${off > 0.005 ? ` (${money(off)} under the ${money(priceNow)} price)` : ''}. Credits apply themselves to completed lessons, oldest first.</p>`;
         })()}
 
         ${prepayForm ? `
@@ -1254,7 +1263,7 @@ function perLessonText(p) {
     return `Covers <b>1 lesson</b> at ${money(amt)}. This is what that lesson will be worth.`;
   }
   const each = amt / n;
-  const rate = studentModal ? Number(studentModal.rate) : 0;
+  const rate = studentModal ? (studentModal.lessonPrice != null ? Number(studentModal.lessonPrice) : lessonPrice(studentModal)) : 0;
   let tag = '';
   if (rate > 0) {
     const diff = rate - each;
@@ -1283,14 +1292,14 @@ function openNewLesson(date) {
   const s = state.students[0];
   const d = date || todayISO();
   lessonModal = {
-    id: null, studentId: s.id, date: d, time: '15:00', duration: 60,
-    subject: s.subject, amount: s.rate, status: statusForDate(d),
+    id: null, studentId: s.id, date: d, time: '15:00', duration: lessonMinutes(s),
+    subject: s.subject, amount: lessonPrice(s), status: statusForDate(d),
     paidCash: false, viaPrepay: false, notes: '', extra: [],
   };
   render();
 }
 function openNewStudent() {
-  studentModal = { id: null, name: '', subject: SUBJECTS[0], grade: '', rate: 20 };
+  studentModal = { id: null, name: '', subject: SUBJECTS[0], grade: '', rate: 20, lessonMinutes: 60 };
   prepayForm = null;
   render();
 }
@@ -1316,7 +1325,7 @@ function saveLesson() {
 function saveStudent() {
   const f = studentModal;
   if (!f.name.trim()) return;
-  const body = { name: f.name.trim(), subject: f.subject, grade: f.grade, rate: f.rate, color: f.color };
+  const body = { name: f.name.trim(), subject: f.subject, grade: f.grade, rate: f.rate, lessonMinutes: lessonMinutes(f), color: f.color };
   if (f.id) {
     studentModal = null; prepayForm = null;
     mutate('/students/' + f.id, { method: 'PUT', body: JSON.stringify(body) });
@@ -1532,7 +1541,7 @@ document.addEventListener('click', (e) => {
       curForm = {
         id: null, studentId: st0.id,
         weekday: v != null && v !== '' ? Number(v) : (new Date().getDay() + 6) % 7,
-        time: el.dataset.t || '15:00', duration: 60, subject: st0.subject, amount: st0.rate,
+        time: el.dataset.t || '15:00', duration: lessonMinutes(st0), subject: st0.subject, amount: lessonPrice(st0),
       };
       render(); break;
     }
@@ -1568,8 +1577,8 @@ document.addEventListener('click', (e) => {
       if (!state.students.length) { state.tab = 'students'; openNewStudent(); break; }
       const st0 = state.students[0];
       lessonModal = {
-        id: null, studentId: st0.id, date: v, time: el.dataset.t, duration: 60,
-        subject: st0.subject, amount: st0.rate, status: statusForDate(v),
+        id: null, studentId: st0.id, date: v, time: el.dataset.t, duration: lessonMinutes(st0),
+        subject: st0.subject, amount: lessonPrice(st0), status: statusForDate(v),
         paidCash: false, viaPrepay: false, notes: '', extra: [],
       };
       render(); break;
@@ -1662,10 +1671,20 @@ document.addEventListener('input', (e) => {
   if (studentModal) {
     if (f === 'name') { studentModal.name = e.target.value; return; }
     if (f === 'grade') { studentModal.grade = e.target.value; return; }
-    if (f === 'rate') {
-      studentModal.rate = Number(e.target.value) || 0;
-      // Deliberately does not touch prepayForm — a recorded block keeps
-      // whatever was actually paid, discount included.
+    // The typed price is what's kept exact; the hourly rate is derived from
+    // it, so changing the length keeps the price you entered.
+    // Deliberately does not touch prepayForm — a recorded block keeps
+    // whatever was actually paid, discount included.
+    if (f === 'lessonPrice') {
+      studentModal.lessonPrice = Number(e.target.value) || 0;
+      studentModal.rate = studentModal.lessonPrice * 60 / lessonMinutes(studentModal);
+      return;
+    }
+    if (f === 'lessonMinutes') {
+      const price = studentModal.lessonPrice != null ? studentModal.lessonPrice : lessonPrice(studentModal);
+      studentModal.lessonMinutes = Number(e.target.value) || 0;
+      studentModal.lessonPrice = price;
+      studentModal.rate = price * 60 / lessonMinutes(studentModal);
       return;
     }
   }
@@ -1704,7 +1723,8 @@ document.addEventListener('change', (e) => {
     const s = studentById(e.target.value);
     if (s) {
       lessonModal.subject = s.subject;
-      lessonModal.amount = Number((s.rate * (lessonModal.duration / 60)).toFixed(2));
+      lessonModal.duration = lessonMinutes(s);
+      lessonModal.amount = lessonPrice(s);
     }
     render(); return;
   }
@@ -1712,7 +1732,7 @@ document.addEventListener('change', (e) => {
     if (f === 'curStudent') {
       curForm.studentId = e.target.value;
       const st = studentById(e.target.value);
-      if (st) { curForm.subject = st.subject; curForm.amount = Number((st.rate * (curForm.duration / 60)).toFixed(2)); }
+      if (st) { curForm.subject = st.subject; curForm.duration = lessonMinutes(st); curForm.amount = lessonPrice(st); }
       render(); return;
     }
     if (f === 'curWeekday') { curForm.weekday = Number(e.target.value); return; }

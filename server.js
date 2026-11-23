@@ -145,6 +145,9 @@ async function initDb() {
 
   // Which Google Calendar event a lesson is mirrored to, if Calendar sync is set up.
   await pool.query(`ALTER TABLE lessons ADD COLUMN IF NOT EXISTS google_event_id TEXT`);
+  // How long this student's lessons normally run; rate stays per hour, so
+  // price per lesson = rate * minutes / 60. Existing students keep 60.
+  await pool.query(`ALTER TABLE students ADD COLUMN IF NOT EXISTS lesson_minutes INTEGER NOT NULL DEFAULT 60`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_settings (
       key TEXT PRIMARY KEY,
@@ -295,6 +298,7 @@ function mapStudent(r, creditsById, usedById, portalSet) {
     subject: r.subject,
     grade: r.grade || '',
     rate: Number(r.rate),
+    lessonMinutes: r.lesson_minutes || 60,
     color: r.color,
     creditsTotal: credits,
     creditsUsed: used,
@@ -429,12 +433,12 @@ app.get('/api/state', async (req, res) => {
 // ---------- Students ----------
 app.post('/api/students', (req, res) => {
   mutate(res, async (client) => {
-    const { name, subject, grade, rate, color } = req.body;
+    const { name, subject, grade, rate, color, lessonMinutes } = req.body;
     if (!name || !subject || rate == null || !color) throw new Error('Missing fields');
     const id = crypto.randomUUID();
     await client.query(
-      'INSERT INTO students (id, name, subject, grade, rate, color) VALUES ($1,$2,$3,$4,$5,$6)',
-      [id, name, subject, grade || '', rate, color]
+      'INSERT INTO students (id, name, subject, grade, rate, color, lesson_minutes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
+      [id, name, subject, grade || '', rate, color, Number(lessonMinutes) > 0 ? Number(lessonMinutes) : 60]
     );
     return id;
   });
@@ -442,10 +446,10 @@ app.post('/api/students', (req, res) => {
 
 app.put('/api/students/:id', (req, res) => {
   mutate(res, async (client) => {
-    const { name, subject, grade, rate, color } = req.body;
+    const { name, subject, grade, rate, color, lessonMinutes } = req.body;
     await client.query(
-      'UPDATE students SET name=$1, subject=$2, grade=$3, rate=$4, color=$5 WHERE id=$6',
-      [name, subject, grade || '', rate, color, req.params.id]
+      'UPDATE students SET name=$1, subject=$2, grade=$3, rate=$4, color=$5, lesson_minutes=$6 WHERE id=$7',
+      [name, subject, grade || '', rate, color, Number(lessonMinutes) > 0 ? Number(lessonMinutes) : 60, req.params.id]
     );
     return req.params.id;
   });
@@ -511,8 +515,8 @@ app.post('/api/lessons', (req, res) => {
     // this later anyway.
     let price = amount;
     if (price == null || price === '') {
-      const st = await client.query('SELECT rate FROM students WHERE id=$1', [studentId]);
-      price = st.rows[0] ? Number(st.rows[0].rate) * ((Number(duration) || 60) / 60) : 0;
+      const st = await client.query('SELECT rate, lesson_minutes FROM students WHERE id=$1', [studentId]);
+      price = st.rows[0] ? Number(st.rows[0].rate) * ((Number(duration) || st.rows[0].lesson_minutes || 60) / 60) : 0;
     }
     for (const d of list) {
       await client.query(
